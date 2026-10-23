@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **每群二态串行化**：用 `proactive/runtime.py::GroupReplyGate` 的「等待 / 回复中」状态机取代按事件发放在途许可的并发模型。回复中到达的消息只进入滑动窗口；回复结束后按窗口水位判断，已被本轮决策读取的消息直接跳过，更新的消息开启下一轮（可能连续回复多条）。同群不再并发决策/回复，不同群互不影响，卡住的状态由 `_IRIS_ACTIVE_TIMEOUT`（120 秒）回收。删除 `proactive/concurrency.py`、`reply_max_concurrency` 隐藏配置与 `_follow_pending` 聚合锁。
 - **主动回复移除冷却机制**：删除 `GroupState`/`cooldown_until` 状态机、决策 JSON 的 `cooldown` 字段与 1026 安全拒绝附带的 30 分钟冷却。静音时段外的每条群消息都会进入决策（锚点命中为 `follow_up`，否则 `chime_in`），不再有采样阈值 N/T、退避 `backoff_level`、`boost` 窗口与 `trigger_min_interval`。
 - **主动发起移除配额**：删除每日发起次数、两次发起最小间隔、无人接话上限与接话疲劳因子，以及决策失败后的 30 分钟重试抑制；仅保留最小静默底线、概率风险率与“等待接话期间不重复发起”的互斥。
 - **LLM 工具与指令调整**：`set_cooldown` Tool 移除（9 → 8 个工具），`/iris_reply cooldown` 指令移除；Dashboard 主动回复页移除状态机、阈值 N/T、退避、连续回复列与冷却日志字段。

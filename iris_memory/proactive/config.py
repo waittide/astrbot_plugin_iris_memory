@@ -21,7 +21,6 @@ _DEFAULTS = {
     "follow_up_aggregate_window": 6,
     "provider_id": "",
     "passive_watch_min_interval": 600,
-    "reply_max_concurrency": 1,
     "passive_watch_enabled": False,
     "proactive_enabled": False,
     "proactive_check_interval": 5,
@@ -45,7 +44,6 @@ _HIDDEN_KEY_MAP = {
     "follow_up_ttl": "reply_follow_up_ttl",
     "follow_up_aggregate_window": "reply_follow_up_aggregate_window",
     "passive_watch_min_interval": "reply_passive_watch_min_interval",
-    "reply_max_concurrency": "reply_max_concurrency",
     "passive_watch_enabled": "reply_passive_watch_enabled",
     "proactive_check_interval": "proactive_check_interval",
     "proactive_quiet_minutes": "proactive_quiet_minutes",
@@ -252,11 +250,6 @@ class ConfigManager:
     @property
     def proactive_instruction(self) -> str:
         return str(self._get("proactive_instruction", ""))
-
-    @property
-    def reply_max_concurrency(self) -> int:
-        """同群可同时进行的决策/回复数上限（1 表示完全串行）。"""
-        return max(1, min(16, int(self._get("reply_max_concurrency"))))
 
     @property
     def proactive_max_message_len(self) -> int:

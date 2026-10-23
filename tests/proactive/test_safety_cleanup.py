@@ -7,9 +7,7 @@ import pytest
 
 from astrbot_plugin_iris_memory.iris_memory.proactive.admin import AdminCommands
 from astrbot_plugin_iris_memory.iris_memory.proactive.api import register_web_apis
-from astrbot_plugin_iris_memory.iris_memory.proactive.concurrency import (
-    DecisionPermitLimiter,
-)
+from astrbot_plugin_iris_memory.iris_memory.proactive.runtime import GroupReplyGate
 from astrbot_plugin_iris_memory.iris_memory.proactive.decision import (
     DecisionCore,
     DecisionRequest,
@@ -25,11 +23,9 @@ from astrbot_plugin_iris_memory.iris_memory.proactive.state import StateManager
 GID = "g1"
 
 
-def _permit_limiter() -> DecisionPermitLimiter:
-    """构造一个已发放许可的并发限制器（供直接调用决策路径的测试使用）。"""
-    limiter = DecisionPermitLimiter(max_concurrency=4, timeout_seconds=120)
-    limiter.claim(GID, "event-1")
-    return limiter
+def _reply_gate() -> GroupReplyGate:
+    """构造群回复状态机（供直接调用决策路径的测试使用）。"""
+    return GroupReplyGate(120)
 
 
 def _message(content: str, timestamp: float) -> WindowMessage:
@@ -132,15 +128,13 @@ class TestRuntimeSafetyPaths:
         plugin._sliding_window = window
         plugin._decision_core = core
         plugin._stats = Mock()
-        plugin._decision_permits = _permit_limiter()
+        plugin._gate = _reply_gate()
         plugin._kv_save = AsyncMock()
 
         event = Mock()
         event.get_group_id.return_value = GID
-        event.get_extra.return_value = {
-            "motive": "chime_in",
-            "provider_id": "provider",
-        }
+        extras = {"iris_decision": {"motive": "chime_in", "provider_id": "provider"}}
+        event.get_extra.side_effect = lambda key, default=None: extras.get(key, default)
 
         stopped = await plugin._handle_reply_decision(event)
 
@@ -148,7 +142,7 @@ class TestRuntimeSafetyPaths:
         assert window.get_messages(GID) == []
         assert state.get_observation(GID) == ""
         assert state.get_anchor(GID).has_context is False
-        assert plugin._decision_permits.in_flight() == 0
+        assert plugin._gate.is_replying(GID) is False
         event.stop_event.assert_called_once()
         plugin._kv_save.assert_awaited()
 
@@ -174,15 +168,13 @@ class TestRuntimeSafetyPaths:
         plugin._sliding_window = window
         plugin._decision_core = core
         plugin._stats = Mock()
-        plugin._decision_permits = _permit_limiter()
+        plugin._gate = _reply_gate()
         plugin._kv_save = AsyncMock()
 
         event = Mock()
         event.get_group_id.return_value = GID
-        event.get_extra.return_value = {
-            "motive": "chime_in",
-            "provider_id": "provider",
-        }
+        extras = {"iris_decision": {"motive": "chime_in", "provider_id": "provider"}}
+        event.get_extra.side_effect = lambda key, default=None: extras.get(key, default)
 
         assert await plugin._handle_reply_decision(event) is True
         assert [msg.content for msg in window.get_messages(GID)] == ["应保留的消息"]

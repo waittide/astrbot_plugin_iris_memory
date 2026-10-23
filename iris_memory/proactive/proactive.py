@@ -14,11 +14,13 @@ from .decision import DecisionCore, DecisionRequest
 from .parser import Decision
 from .perception import ContextPackager, SlidingWindow, WindowMessage
 from .prompts import SPEAK_HINTS
+from .runtime import GroupReplyGate
 from .signals import SignalGate
 from .state import StateManager
 from .stats import StatsCollector
 from .time_hint import resolve_datetime_reminder, wrap_system_reminder
 from ..llm_modules import PROACTIVE_REPLY_INITIATE
+
 
 def _record_initiate_send(group_id: str, text: str, success: bool, error: str = "") -> None:
     """写入统一运行日志（proactive 类型，主动发起直发结果）。"""
@@ -61,6 +63,7 @@ class ProactiveEngine:
         packager: ContextPackager,
         umo_get: Callable[[str], str | None],
         is_busy: Callable[[str], bool],
+        gate: GroupReplyGate | None = None,
         self_id_get: Callable[[], str],
         save_fn: Callable[[], Awaitable[None]],
         on_initiate_sent: Callable[[str, str], Awaitable[None]] | None = None,
@@ -77,6 +80,7 @@ class ProactiveEngine:
         self._packager = packager
         self._umo_get = umo_get
         self._is_busy = is_busy
+        self._gate = gate
         self._self_id_get = self_id_get
         self._save_fn = save_fn
         self._on_initiate_sent = on_initiate_sent
@@ -87,6 +91,14 @@ class ProactiveEngine:
 
     def is_initiating(self, group_id: str) -> bool:
         return group_id in self._initiating
+
+    def _busy(self, group_id: str) -> bool:
+        """群是否正被其它轮次占用（发起中不算，发起者自己持有状态）。"""
+        if group_id in self._initiating:
+            return False
+        if self._gate is not None:
+            return self._gate.is_replying(group_id)
+        return self._is_busy(group_id)
 
     async def start(self) -> None:
         if not self._config.proactive_enabled:
@@ -191,7 +203,7 @@ class ProactiveEngine:
         random.shuffle(due)
         for group_id in due:
             await self._check_pending_timeout(group_id)
-            if self._is_busy(group_id) or group_id in self._initiating:
+            if self._busy(group_id):
                 self._schedule_group(group_id, now=now)
                 continue
             messages = self._window.get_messages(group_id)
@@ -217,13 +229,22 @@ class ProactiveEngine:
         """执行一次主动发起。force 跳过门控（管理命令调试用），但保留互斥护栏。"""
         if group_id in self._initiating:
             return "该群正在发起中"
-        if self._is_busy(group_id):
-            return "该群有回复进行中，稍后再试"
         if not force and not self._state.is_whitelisted(group_id):
             return "该群未启用"
 
+        # 主动发起同样占用群状态：群正在回复时直接放弃本次发起
+        holds_gate = False
+        if self._gate is not None:
+            if not self._gate.try_acquire(group_id):
+                return "该群正在回复中，稍后再试"
+            holds_gate = True
+        elif self._is_busy(group_id):
+            return "该群有回复进行中，稍后再试"
+
         umo = self._umo_get(group_id)
         if not umo:
+            if holds_gate:
+                await self._gate.release(group_id)
             return "暂无该群的会话标识（等群里有过消息后再试）"
 
         provider_id = self._config.provider_id
@@ -233,6 +254,8 @@ class ProactiveEngine:
             except Exception:
                 provider_id = None
         if not provider_id:
+            if holds_gate:
+                await self._gate.release(group_id)
             return "无法获取 LLM 提供商"
 
         messages = self._window.get_messages(group_id)
@@ -380,6 +403,8 @@ class ProactiveEngine:
             return f"发起异常: {e}"
         finally:
             self._initiating.discard(group_id)
+            if holds_gate:
+                await self._gate.release(group_id)
 
     def _initiate_guard_reason(
         self,
@@ -389,7 +414,7 @@ class ProactiveEngine:
         require_quiet: bool,
     ) -> str:
         """发送前二次确认现场，防止生成期间群聊已经恢复。"""
-        if self._is_busy(group_id):
+        if group_id not in self._initiating and self._busy(group_id):
             return "群内已有回复进行中"
         data = self._state.get_state(group_id)
         messages = self._window.get_messages(group_id)
