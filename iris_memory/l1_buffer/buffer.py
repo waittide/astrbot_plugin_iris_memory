@@ -194,8 +194,33 @@ class L1Buffer(Component):
                 else:
                     queue.segment_1.append(message)
                 queue.total_tokens += message.token_count
-        if snapshot:
-            logger.info(f"已从磁盘还原 {len(snapshot)} 个会话的 L1 消息队列")
+        try:
+            image_snapshot = self._store.load_images()
+        except Exception as e:
+            logger.error(f"L1 图片队列还原失败：{e}")
+            image_snapshot = {}
+
+        from ..image import ImageQueueItem
+
+        restored_images = 0
+        for queue_key, items in image_snapshot.items():
+            restored = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    restored.append(ImageQueueItem.from_dict(item))
+                except Exception:
+                    continue
+            if restored:
+                self._image_queues[queue_key] = restored
+                restored_images += len(restored)
+
+        if snapshot or restored_images:
+            logger.info(
+                f"已从磁盘还原 {len(snapshot)} 个会话的 L1 消息队列、"
+                f"{restored_images} 张待处理图片"
+            )
 
     def set_component_manager(self, manager: "ComponentManager") -> None:
         self._component_manager = manager
@@ -460,11 +485,14 @@ class L1Buffer(Component):
             self._dirty_queues.clear()
             for queue_key in pending:
                 queue = self._queues.get(queue_key)
+                images = self._image_queues.get(queue_key, [])
                 try:
-                    if queue is None:
+                    if queue is None and not images:
                         await asyncio.to_thread(self._store.delete, queue_key)
-                    else:
+                        continue
+                    if queue is not None:
                         await asyncio.to_thread(self._store.save, queue_key, queue)
+                    await asyncio.to_thread(self._store.save_images, queue_key, images)
                 except Exception as e:
                     self._dirty_queues.add(queue_key)
                     logger.warning(f"L1 队列落盘失败，稍后重试：{queue_key}, {e}")
@@ -1773,6 +1801,7 @@ class L1Buffer(Component):
             self._image_queues[queue_key] = []
 
         self._image_queues[queue_key].append(image_item)
+        self._mark_queue_dirty(queue_key)
         logger.debug(
             f"图片已入队：{queue_key}, hash={image_item.image_hash[:8]}..., "
             f"队列大小={len(self._image_queues[queue_key])}"
@@ -1870,6 +1899,7 @@ class L1Buffer(Component):
                 if status != ImageParseStatus.PROCESSING:
                     img.claim_token = ""
                     img.claimed_at = None
+                self._mark_queue_dirty(queue_key)
                 logger.debug(
                     f"图片状态已更新：{queue_key}, hash={image_hash[:8]}..., "
                     f"status={status.value}"
@@ -1901,6 +1931,7 @@ class L1Buffer(Component):
             img.claim_token = ""
             img.claimed_at = None
             img.next_attempt_at = next_attempt_at
+            self._mark_queue_dirty(queue_key)
             return True
         return False
 
@@ -1921,6 +1952,7 @@ class L1Buffer(Component):
         removed_count = original_count - len(self._image_queues[queue_key])
         if removed_count > 0:
             self._cleanup_image_cache_files(removed_items)
+            self._mark_queue_dirty(queue_key)
             logger.debug(f"已清理消息 {message_id} 的 {removed_count} 张图片")
 
         return removed_count
@@ -1937,6 +1969,7 @@ class L1Buffer(Component):
 
         if removed_count > 0:
             self._cleanup_image_cache_files(removed_items)
+            self._mark_queue_dirty(queue_key)
             logger.debug(f"已清理队列 {queue_key} 的 {removed_count} 张图片")
 
         return removed_count
@@ -2019,6 +2052,7 @@ class L1Buffer(Component):
         removed_count = original_count - len(self._image_queues[queue_key])
         if removed_count > 0:
             self._cleanup_image_cache_files(removed_items)
+            self._mark_queue_dirty(queue_key)
             logger.debug(f"已清理被总结消息的 {removed_count} 张图片")
 
         return removed_count

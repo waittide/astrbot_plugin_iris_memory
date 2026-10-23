@@ -123,3 +123,80 @@ async def test_buffer_restores_queue_after_restart(tmp_path, monkeypatch):
     await second.shutdown()
 
     assert [msg.content for msg in context] == ["重启前的消息"]
+
+
+def test_image_queue_survives_reopen(tmp_path):
+    from astrbot_plugin_iris_memory.iris_memory.image import (
+        ImageInfo,
+        ImageParseStatus,
+        ImageQueueItem,
+    )
+
+    path = tmp_path / "l1.db"
+    store = L1QueueStore(path)
+    item = ImageQueueItem(
+        image_hash="ph:abcd",
+        image_url="https://example.com/a.jpg",
+        image_info=ImageInfo(url="https://example.com/a.jpg", format="jpg"),
+        message_id="m1",
+        group_id="g1",
+        user_id="u1",
+        status=ImageParseStatus.PENDING,
+        attempt_count=2,
+    )
+    store.save_images("g1", [item])
+    store.close()
+
+    reopened = L1QueueStore(path)
+    snapshot = reopened.load_images()
+    reopened.close()
+
+    assert list(snapshot) == ["g1"]
+    restored = ImageQueueItem.from_dict(snapshot["g1"][0])
+    assert restored.image_hash == "ph:abcd"
+    assert restored.status == ImageParseStatus.PENDING
+    assert restored.message_id == "m1"
+    assert restored.attempt_count == 2
+
+
+@pytest.mark.asyncio
+async def test_buffer_restores_pending_images(tmp_path):
+    """重启后待解析图片仍可被 related 模式领取，不会遗留 [IMG:] 占位。"""
+    from unittest.mock import Mock
+
+    from astrbot_plugin_iris_memory.iris_memory.config import init_config
+    from astrbot_plugin_iris_memory.iris_memory.image import (
+        ImageParseStatus,
+        ImageQueueItem,
+    )
+    from astrbot_plugin_iris_memory.iris_memory.l1_buffer.buffer import L1Buffer
+
+    astrbot_config = Mock()
+    astrbot_config.__getitem__ = Mock(
+        return_value={"enable": True, "inject_queue_length": 20}
+    )
+    astrbot_config.__contains__ = Mock(return_value=True)
+    init_config(astrbot_config, tmp_path)
+
+    first = L1Buffer()
+    await first.initialize()
+    await first.add_message("group_1", "user", "[IMG:abcd] 看图", "user_1")
+    first.add_image(
+        "group_1",
+        ImageQueueItem(
+            image_hash="ph:abcd",
+            image_url="https://example.com/a.jpg",
+            message_id="m1",
+            group_id="group_1",
+            status=ImageParseStatus.PENDING,
+        ),
+    )
+    await first._persist_dirty()
+    await first.shutdown()
+
+    second = L1Buffer()
+    await second.initialize()
+    pending = second.get_images("group_1")
+    await second.shutdown()
+
+    assert [img.image_hash for img in pending] == ["ph:abcd"]

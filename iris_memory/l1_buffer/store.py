@@ -1,8 +1,8 @@
-"""L1 消息队列的 SQLite 持久化。
+"""L1 消息队列与图片队列的 SQLite 持久化。
 
 L1 队列此前只存在于内存，进程重启或插件热重载会丢失尚未总结的
-最近对话。本模块按队列键把三段式队列整体落盘，启动时还原，
-使 L1 在重启后仍然连续。
+最近对话。本模块按队列键把三段式队列与待解析图片整体落盘，启动时
+还原，使 L1 在重启后仍然连续。
 """
 
 from __future__ import annotations
@@ -56,6 +56,16 @@ class L1QueueStore:
                     source TEXT NOT NULL,
                     metadata_json TEXT NOT NULL,
                     persona_id TEXT NOT NULL,
+                    PRIMARY KEY (queue_key, seq)
+                )
+                """
+            )
+            self._db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS l1_images (
+                    queue_key TEXT NOT NULL,
+                    seq INTEGER NOT NULL,
+                    item_json TEXT NOT NULL,
                     PRIMARY KEY (queue_key, seq)
                 )
                 """
@@ -126,16 +136,55 @@ class L1QueueStore:
             )
         return snapshot
 
+    def save_images(self, queue_key: str, items: list[object]) -> None:
+        """整体重写一个会话的图片队列快照。"""
+        rows = [
+            (
+                queue_key,
+                seq,
+                json.dumps(item.to_dict(), ensure_ascii=False, default=str),
+            )
+            for seq, item in enumerate(items)
+        ]
+        with self._lock:
+            self._db.execute("DELETE FROM l1_images WHERE queue_key = ?", (queue_key,))
+            if rows:
+                self._db.executemany(
+                    "INSERT INTO l1_images (queue_key, seq, item_json) "
+                    "VALUES (?, ?, ?)",
+                    rows,
+                )
+            self._db.commit()
+
+    def load_images(self) -> dict[str, list[dict]]:
+        """读取全部图片队列快照（保留原始字典，由调用方还原为对象）。"""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM l1_images ORDER BY queue_key, seq"
+            ).fetchall()
+
+        snapshot: dict[str, list[dict]] = {}
+        for row in rows:
+            try:
+                item = json.loads(row["item_json"] or "{}")
+            except json.JSONDecodeError:
+                continue
+            if isinstance(item, dict):
+                snapshot.setdefault(row["queue_key"], []).append(item)
+        return snapshot
+
     def delete(self, queue_key: str) -> None:
         with self._lock:
             self._db.execute(
                 "DELETE FROM l1_messages WHERE queue_key = ?", (queue_key,)
             )
+            self._db.execute("DELETE FROM l1_images WHERE queue_key = ?", (queue_key,))
             self._db.commit()
 
     def clear(self) -> None:
         with self._lock:
             self._db.execute("DELETE FROM l1_messages")
+            self._db.execute("DELETE FROM l1_images")
             self._db.commit()
 
     def close(self) -> None:
