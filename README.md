@@ -11,7 +11,7 @@ Iris Memory 用一个插件完成三件彼此关联的事：让机器人长期�
 | 能力 | 作用 | 轻量化设计 |
 | --- | --- | --- |
 | 记忆 | L1 会话缓冲、L2 向量记忆、L3 知识图谱、用户/群画像 | FAISS + SQLite；分层注入预算；梦境任务增量加工 |
-| 主动回复 | 跟话、跟进、主动发起、被动观察 | SignalGate 本地零 LLM 门控；单次统一决策；冷却与退避 |
+| 主动回复 | 跟话、跟进、主动发起、被动观察 | 每条消息都进入统一决策；零 LLM 前置门控；无冷却与退避 |
 | 人格自学习迭代 | 从指定群和用户的真实表达中迭代具名 Persona | 脱敏采样；分析/生成/审查分离；审批、冲突保护与非破坏性回滚 |
 
 辅助能力包括图片理解、表达模式学习、错误消息友好化、Markdown 清理、数据备份以及 AstrBot Dashboard 管理页面。
@@ -149,9 +149,9 @@ SQLite 保存内容和元数据，FAISS 保存向量索引。支持语义检索�
 - `initiate`：群聊长时间安静时主动发起话题。
 - `watch`：只观察并更新对话锚点，不发言。
 
-SignalGate 会先根据消息信号、冷却和静音时段进行本地判断。通过门控后，统一决策模型一次输出是否发言、内容、话题、关注对象、漂移和冷却建议。
+SignalGate 只做零 LLM 成本的本地判断：静音时段外，**每条群消息都会进入决策**（锚点命中记为 `follow_up`，否则 `chime_in`），不存在冷却、采样阈值或退避，也不会因为连续未发言而降低评估频率。统一决策模型一次输出是否发言、内容、话题、关注对象与漂移判断。
 
-主动发起按群独立预约：达到最小静默底线后使用概率风险率评估，滚动 24 小时限额避免零点同步；静音结束会重新随机延后。决策必须说明 `why_now` 与 `topic_source`，发送前还会再次检查期间是否出现新消息。
+主动发起按群独立预约：达到最小静默底线后使用概率风险率评估，不设每日次数、两次发起间隔或无人接话上限；静音结束会重新随机延后。决策必须说明 `why_now` 与 `topic_source`，发送前还会再次检查期间是否出现新消息。
 
 常用指令：
 
@@ -160,7 +160,6 @@ SignalGate 会先根据消息信号、冷却和静音时段进行本地判断。
 /iris_reply disable
 /iris_reply status
 /iris_reply reset
-/iris_reply cooldown [分钟]
 /iris_reply willingness [低|中|高]
 /iris_reply initiate
 ```
@@ -209,7 +208,7 @@ SignalGate 会先根据消息信号、冷却和静音时段进行本地判断。
 插件还提供以下 Function Calling 工具：
 
 - 记忆：`save_memory`、`search_memory`、`correct_memory`、`save_knowledge`、`search_knowledge_graph`、`get_profile`
-- 主动回复：`add_follow_up`、`end_follow_up`、`set_cooldown`
+- 主动回复：`add_follow_up`、`end_follow_up`
 
 ## 配置
 
@@ -275,11 +274,11 @@ SignalGate 会先根据消息信号、冷却和静音时段进行本地判断。
 
 ### 主动回复没有发言
 
-使用 `/iris_reply status` 检查群开关、冷却和静音时段。需要时调整 willingness，并在 Dashboard 查看决策统计。
+使用 `/iris_reply status` 检查群开关、静音时段与锚点状态。需要时调整 willingness，并在 Dashboard 查看每次决策的记录与统计。
 
 ### 主动回复过于频繁
 
-降低 willingness，延长冷却，或在 Dashboard 调整 backoff、boost 和静音时段。
+降低 willingness（影响决策提示与主动发起风险率），或调整静音时段；主动回复本身不再有冷却与退避机制。
 
 ### 人格迭代任务显示 conflict
 

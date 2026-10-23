@@ -3,6 +3,15 @@
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **主动回复移除冷却机制**：删除 `GroupState`/`cooldown_until` 状态机、决策 JSON 的 `cooldown` 字段与 1026 安全拒绝附带的 30 分钟冷却。静音时段外的每条群消息都会进入决策（锚点命中为 `follow_up`，否则 `chime_in`），不再有采样阈值 N/T、退避 `backoff_level`、`boost` 窗口与 `trigger_min_interval`。
+- **主动发起移除配额**：删除每日发起次数、两次发起最小间隔、无人接话上限与接话疲劳因子，以及决策失败后的 30 分钟重试抑制；仅保留最小静默底线、概率风险率与“等待接话期间不重复发起”的互斥。
+- **LLM 工具与指令调整**：`set_cooldown` Tool 移除（9 → 8 个工具），`/iris_reply cooldown` 指令移除；Dashboard 主动回复页移除状态机、阈值 N/T、退避、连续回复列与冷却日志字段。
+- **L1 队列持久化**：新增 `data/l1_buffer.db`（`l1_messages` + `l1_images` 两张表），三段式队列与待解析图片在启动时还原，重启或插件热重载不再丢失尚未总结的对话；落盘按 `l1_persist_interval_seconds`（默认 2 秒）节流，关闭前强制 flush。
+
 ## [3.2.1] - 2026-09-08
 
 ### Fixed
