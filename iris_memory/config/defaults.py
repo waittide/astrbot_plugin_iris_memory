@@ -194,6 +194,20 @@ class HiddenConfig:
         default=60,
         metadata={"description": "L1 Outbox 崩溃恢复扫描间隔(秒)", "group": "L1 缓冲"},
     )
+    l1_persist_enable: bool = field(
+        default=True,
+        metadata={
+            "description": "持久化 L1 消息队列，重启后恢复尚未总结的对话",
+            "group": "L1 缓冲",
+        },
+    )
+    l1_persist_interval_seconds: float = field(
+        default=2.0,
+        metadata={
+            "description": "L1 队列落盘节流间隔(秒)，0 表示每条消息立即写入",
+            "group": "L1 缓冲",
+        },
+    )
 
     # 遗忘权重算法参数
     forgetting_lambda: float = field(

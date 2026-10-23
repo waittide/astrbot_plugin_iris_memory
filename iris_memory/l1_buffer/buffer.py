@@ -17,6 +17,7 @@ from pathlib import Path
 from datetime import datetime
 import asyncio
 import re
+import time
 
 from ..core import Component, get_logger
 from ..config import get_config
@@ -26,6 +27,7 @@ from ..tasks.work_queue import BoundedWorkQueue
 from ..utils import count_tokens
 from .models import ContextMessage, SegmentedMessageQueue
 from .outbox import SummaryOutbox
+from .store import SEGMENT_2, SEGMENT_3, L1QueueStore
 from .summarizer import Summarizer
 
 if TYPE_CHECKING:
@@ -100,6 +102,12 @@ class L1Buffer(Component):
         self._outbox: Optional[SummaryOutbox] = None
         self._outbox_work_queue: Optional[BoundedWorkQueue[str]] = None
         self._outbox_recovery_task: Optional[asyncio.Task] = None
+        # 队列持久化：内存队列 + 脏队列集合，节流异步落盘
+        self._store: Optional[L1QueueStore] = None
+        self._dirty_queues: set[str] = set()
+        self._persist_lock = asyncio.Lock()
+        self._last_persist_at: float = 0.0
+        self._persist_task: Optional[asyncio.Task] = None
         logger.debug("L1Buffer 实例已创建")
 
     @property
@@ -144,6 +152,8 @@ class L1Buffer(Component):
                     1, int(config.get("l1_outbox_worker_count", 2) or 2)
                 ),
             )
+            if config.get("l1_persist_enable", True):
+                self._open_store(data_dir)
 
             self._is_available = True
             logger.info("L1 缓冲组件初始化成功")
@@ -153,6 +163,39 @@ class L1Buffer(Component):
             self._init_error = str(e)
             logger.error(f"L1 缓冲组件初始化失败：{e}", exc_info=True)
             raise
+
+    def _open_store(self, data_dir: object) -> None:
+        """打开持久化存储并还原上次运行留下的 L1 队列。"""
+        path: Path | str = (
+            Path(data_dir) / "l1_buffer.db"
+            if isinstance(data_dir, (str, Path))
+            else ":memory:"
+        )
+        try:
+            self._store = L1QueueStore(path)
+        except Exception as e:
+            logger.error(f"L1 队列持久化初始化失败，降级为纯内存模式：{e}")
+            self._store = None
+            return
+
+        try:
+            snapshot = self._store.load_all()
+        except Exception as e:
+            logger.error(f"L1 队列还原失败，从空队列开始：{e}")
+            return
+
+        for queue_key, items in snapshot.items():
+            queue = self._get_or_create_queue(queue_key)
+            for segment, message in items:
+                if segment == SEGMENT_3:
+                    queue.segment_3.append(message)
+                elif segment == SEGMENT_2:
+                    queue.segment_2.append(message)
+                else:
+                    queue.segment_1.append(message)
+                queue.total_tokens += message.token_count
+        if snapshot:
+            logger.info(f"已从磁盘还原 {len(snapshot)} 个会话的 L1 消息队列")
 
     def set_component_manager(self, manager: "ComponentManager") -> None:
         self._component_manager = manager
@@ -171,6 +214,12 @@ class L1Buffer(Component):
                 self._outbox_recovery_task, return_exceptions=True
             )
         self._outbox_recovery_task = None
+        if self._persist_task and not self._persist_task.done():
+            self._persist_task.cancel()
+            await asyncio.gather(self._persist_task, return_exceptions=True)
+        self._persist_task = None
+        # 关闭前先落盘，避免丢失尚未总结的最近对话
+        await self._persist_dirty()
         if self._summary_work_queue:
             await self._summary_work_queue.shutdown()
             self._summary_work_queue = None
@@ -180,6 +229,9 @@ class L1Buffer(Component):
         if self._outbox:
             self._outbox.close()
             self._outbox = None
+        if self._store:
+            self._store.close()
+            self._store = None
         self.clear_all()
         self._summarizing_locks.clear()
         self._summary_fail_counts.clear()
@@ -358,8 +410,64 @@ class L1Buffer(Component):
         )
 
         self._schedule_summarize(group_id)
+        self._mark_queue_dirty(group_id)
 
         return True
+
+    # ---- 队列持久化 ----
+
+    def _mark_queue_dirty(self, group_id: str) -> None:
+        """标记会话队列待落盘并安排一次异步写入；未启用持久化时为空操作。"""
+        if not self._store:
+            return
+        self._dirty_queues.add(self._get_queue_key(group_id))
+        if self._persist_task is not None and not self._persist_task.done():
+            return
+        try:
+            self._persist_task = asyncio.create_task(
+                self._persist_soon(), name="iris-l1-persist"
+            )
+        except RuntimeError:
+            # 无运行中的事件循环（同步调用/关闭后期）时跳过，等下次标记
+            self._persist_task = None
+
+    async def _persist_soon(self) -> None:
+        """按 ``l1_persist_interval_seconds`` 节流落盘，直到没有脏队列。"""
+        try:
+            config = get_config()
+            interval = max(
+                0.0, float(config.get("l1_persist_interval_seconds", 2) or 0)
+            )
+            while self._dirty_queues:
+                wait = self._last_persist_at + interval - time.monotonic()
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                await self._persist_dirty()
+        finally:
+            self._persist_task = None
+
+    async def _persist_dirty(self) -> None:
+        """把脏队列整体重写入 SQLite（队列很短，整写不会留下错乱中间态）。"""
+        if not self._store or not self._dirty_queues:
+            return
+
+        async with self._persist_lock:
+            if not self._dirty_queues:
+                return
+            self._last_persist_at = time.monotonic()
+
+            pending = list(self._dirty_queues)
+            self._dirty_queues.clear()
+            for queue_key in pending:
+                queue = self._queues.get(queue_key)
+                try:
+                    if queue is None:
+                        await asyncio.to_thread(self._store.delete, queue_key)
+                    else:
+                        await asyncio.to_thread(self._store.save, queue_key, queue)
+                except Exception as e:
+                    self._dirty_queues.add(queue_key)
+                    logger.warning(f"L1 队列落盘失败，稍后重试：{queue_key}, {e}")
 
     def get_context(
         self, group_id: str, max_length: Optional[int] = None
@@ -408,6 +516,12 @@ class L1Buffer(Component):
             for queue_key in queue_keys:
                 self._summary_work_queue.discard(queue_key)
         self._cleanup_image_cache_files(all_image_items)
+        if self._store and queue_keys:
+            self._dirty_queues.clear()
+            try:
+                self._store.clear()
+            except Exception as e:
+                logger.warning(f"清空 L1 持久化失败：{e}")
         logger.info(f"已清空所有队列，共 {total_messages} 条消息")
         return total_messages
 
@@ -423,6 +537,8 @@ class L1Buffer(Component):
                 logger.info(
                     f"已从队列 {queue_key} 删除用户 {user_id} 的 {removed} 条消息"
                 )
+                if removed:
+                    self._mark_queue_dirty(queue_key)
         else:
             for queue_key, queue in self._queues.items():
                 removed = queue.remove_user_messages(user_id)
@@ -431,6 +547,7 @@ class L1Buffer(Component):
                     logger.info(
                         f"已从队列 {queue_key} 删除用户 {user_id} 的 {removed} 条消息"
                     )
+                    self._mark_queue_dirty(queue_key)
 
         return total_removed
 
@@ -446,6 +563,8 @@ class L1Buffer(Component):
             self._summarizing_locks.pop(queue_key, None)
             if self._summary_work_queue:
                 self._summary_work_queue.discard(queue_key)
+            if self._store:
+                self._dirty_queues.add(queue_key)
             return old_size
 
         return 0
@@ -558,6 +677,7 @@ class L1Buffer(Component):
                         removed = queue.clear_segment_2()
                         self._clear_images_for_summarized_messages(queue_key, removed)
                         self._summary_fail_counts[queue_key] = 0
+                        self._mark_queue_dirty(queue_key)
                     else:
                         logger.info(
                             f"队列 {queue_key} 空总结第 {fail_count} 次失败"
@@ -570,6 +690,7 @@ class L1Buffer(Component):
 
                 queue.rotate_after_summary(summarized_messages=target_messages)
                 self._clear_images_for_summarized_messages(queue_key, target_messages)
+                self._mark_queue_dirty(queue_key)
 
                 logger.info(
                     f"总结完成，段位转移后：L1-1={len(queue.segment_1)}, "
@@ -591,6 +712,7 @@ class L1Buffer(Component):
                     if queue_key in self._queues:
                         removed = queue.clear_segment_2()
                         self._clear_images_for_summarized_messages(queue_key, removed)
+                        self._mark_queue_dirty(queue_key)
                     self._summary_fail_counts[queue_key] = 0
 
         if outbox_job_id and self._outbox_work_queue:
@@ -1327,12 +1449,8 @@ class L1Buffer(Component):
             ]
 
             if memory_ids:
-                high_count = sum(
-                    1 for c in written_confidences if c == "high"
-                )
-                medium_count = sum(
-                    1 for c in written_confidences if c == "medium"
-                )
+                high_count = sum(1 for c in written_confidences if c == "high")
+                medium_count = sum(1 for c in written_confidences if c == "medium")
                 quality_msg = (
                     f"，质量过滤 {quality_filtered} 条" if quality_filtered else ""
                 )
@@ -1576,6 +1694,7 @@ class L1Buffer(Component):
             f"已追加文本到最后消息：{queue_key}, 追加长度={len(suffix)}, "
             f"token差={token_diff}"
         )
+        self._mark_queue_dirty(queue_key)
         return True
 
     def prepend_to_last_message(
@@ -1612,6 +1731,7 @@ class L1Buffer(Component):
             f"已前置文本到最后消息：{queue_key}, 前置长度={len(prefix)}, "
             f"token差={token_diff}"
         )
+        self._mark_queue_dirty(queue_key)
         return True
 
     def replace_image_placeholder(
@@ -1642,6 +1762,8 @@ class L1Buffer(Component):
                     f"{placeholder} -> {description[:30]}..."
                 )
 
+        if replaced:
+            self._mark_queue_dirty(queue_key)
         return replaced
 
     def add_image(self, group_id: str, image_item: Any) -> None:
