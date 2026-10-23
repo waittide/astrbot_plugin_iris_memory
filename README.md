@@ -31,7 +31,7 @@ Iris Memory 用一个插件完成三件彼此关联的事：让机器人长期�
 3. 必须将 AstrBot 的 `provider_ltm_settings.group_message_max_cnt` 设置为 `0`，由本插件统一管理上下文。否则可能出现重复注入和第三人称复述。
 4. 若希望“先发内容、再单独 @ 机器人”时由本插件结合 L1 回复，请启用 `extras.pure_at_reply.enable`，并关闭 AstrBot 的 `platform_settings.empty_mention_waiting`（“只 @ 机器人是否触发等待”）。
 5. L2 默认需要一个 AstrBot Embedding Provider。使用本地 Embedding 时，需另行安装 `sentence-transformers`。
-6. 从 v2 升级的用户先阅读 [迁移指南](./docs/MIGRATION.md)。
+6. 从 v2 升级的用户先阅读下方「从 v2 迁移」一节。
 
 ### 平台支持说明
 
@@ -88,7 +88,7 @@ Iris Memory 用一个插件完成三件彼此关联的事：让机器人长期�
 3. 指定目标 Persona、学习群和学习用户；内置 `default` Persona 需要先克隆。
 4. 审阅生成的 Revision，批准后发布；需要时可从任意已应用版本非破坏性回滚。
 
-默认自动触发条件为累计 100 条新增有效消息且距离上次成功至少 24 小时。手动执行仍需至少 20 条有效样本。完整流程见 [人格自学习迭代指南](./docs/PERSONA_EVOLUTION.md)。
+默认自动触发条件为累计 100 条新增有效消息且距离上次成功至少 24 小时。手动执行仍需至少 20 条有效样本。完整流程见下文「人格自学习迭代」一节。
 
 ## 三合一工作流
 
@@ -116,7 +116,7 @@ flowchart LR
 
 ### L1：近期上下文
 
-三段式 FIFO 缓冲保存近期消息，并通过滚动总结进入 L2。当前用户消息会在注入时排除，避免重复上下文。
+三段式 FIFO 缓冲保存近期消息，并通过滚动总结进入 L2。当前用户消息会在注入时排除，避免重复上下文。L1 队列与待解析图片落盘在 `l1_buffer.db`，重启或插件热重载后自动恢复尚未总结的对话；落盘按 `l1_persist_interval_seconds`（默认 2 秒）节流，关闭前强制 flush。
 
 ### L2：长期语义记忆
 
@@ -257,7 +257,9 @@ SignalGate 会先根据消息信号、冷却和静音时段进行本地判断。
 
 首次启动 v3 时，插件会尝试一次性迁移旧 ChromaDB 记忆、知识图谱、画像、主动回复白名单和部分旧配置，并在迁移前备份到 `<数据目录>/legacy_backup/`。
 
-旧 ChromaDB 记忆迁移需要额外安装 `chromadb`；未安装时只跳过 L2 迁移，不阻塞插件启动。详细步骤、验证和回滚方式见 [v2 → v3 迁移指南](./docs/MIGRATION.md)。
+旧 ChromaDB 记忆迁移需要额外安装 `chromadb`；未安装时只跳过 L2 迁移，不阻塞插件启动。
+
+迁移完成前请勿删除 `<数据目录>/legacy_backup/`，以便需要时回滚：停用插件、恢复备份目录、重新启动即可回到 v2 数据状态。
 
 梦境阶段开关属于本轮重构后的新配置，不参与旧 6 开关迁移。
 
@@ -295,8 +297,6 @@ python -m pytest -q
 ## 文档
 
 - [更新日志](./CHANGELOG.md)
-- [v2 → v3 迁移指南](./docs/MIGRATION.md)
-- [人格自学习迭代指南](./docs/PERSONA_EVOLUTION.md)
 - [Web 前端开发说明](./iris_memory/web/README.md)
 - [AstrBot 插件开发文档](https://docs.astrbot.app/dev/star/plugin-new.html)
 
