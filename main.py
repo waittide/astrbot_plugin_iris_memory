@@ -73,6 +73,7 @@ from .iris_memory.proactive.api import (
     register_web_apis as register_reply_web_apis,
     sync_stats_group_state,
 )
+from .iris_memory.proactive.concurrency import DecisionPermitLimiter
 from .iris_memory.proactive.config import ConfigManager as ReplyConfigManager
 from .iris_memory.proactive.decision import (
     DecisionCore,
@@ -90,7 +91,6 @@ from .iris_memory.proactive.proactive import ProactiveEngine
 from .iris_memory.proactive.signals import SignalGate
 from .iris_memory.proactive.state import StateManager
 from .iris_memory.proactive.stats import StatsCollector
-from .iris_memory.proactive.tickets import DecisionTicketRegistry
 from .iris_memory.proactive.time_hint import resolve_datetime_reminder
 from .iris_memory.proactive.tools import ToolContext
 from .iris_memory.extras import ErrorFriendlyProcessor, MarkdownStripper
@@ -204,10 +204,13 @@ class IrisMemoryPlugin(Star):
             )
             self._admin = AdminCommands(self._state)
             self._stats = StatsCollector()
-            self._reply_in_progress: dict[str, float] = {}
-            self._passive_active: dict[str, float] = {}
-            self._triggering: dict[str, float] = {}
-            self._decision_tickets = DecisionTicketRegistry(_IRIS_ACTIVE_TIMEOUT)
+            # 在途起始时间列表：同群允许并发，列表长度即在途数量
+            self._reply_in_progress: dict[str, list[float]] = {}
+            self._passive_active: dict[str, list[float]] = {}
+            self._decision_permits = DecisionPermitLimiter(
+                self._reply_config.reply_max_concurrency,
+                _IRIS_ACTIVE_TIMEOUT,
+            )
             self._passive_watch_last: dict[str, float] = {}
             self._passive_watch_hash: dict[str, str] = {}
             self._follow_pending: set[str] = set()
@@ -454,8 +457,7 @@ class IrisMemoryPlugin(Star):
         self._follow_pending.clear()
         self._reply_in_progress.clear()
         self._passive_active.clear()
-        self._triggering.clear()
-        self._decision_tickets.clear()
+        self._decision_permits.clear()
         self._passive_watch_last.clear()
         self._passive_watch_hash.clear()
         # 记忆侧
@@ -482,28 +484,16 @@ class IrisMemoryPlugin(Star):
 
     def _cleanup_stale_active(self) -> None:
         now = time.time()
-        stale_rip = [gid for gid, ts in self._reply_in_progress.items() if now - ts > _IRIS_ACTIVE_TIMEOUT]
-        for gid in stale_rip:
-            logger.info(f"Iris Reply: cleaning up stale reply_in_progress for group {gid} (timeout)")
-            self._reply_in_progress.pop(gid, None)
-        stale_passive = [gid for gid, ts in self._passive_active.items() if now - ts > _IRIS_ACTIVE_TIMEOUT]
-        for gid in stale_passive:
-            logger.info(f"Iris Reply: cleaning up stale passive for group {gid} (timeout)")
-            self._passive_active.pop(gid, None)
-        stale_triggering = [gid for gid, ts in self._triggering.items()
-                            if gid not in self._reply_in_progress and now - ts > _IRIS_ACTIVE_TIMEOUT]
-        for gid in stale_triggering:
-            logger.info(f"Iris Reply: cleaning up stale triggering for group {gid}")
-            self._triggering.pop(gid, None)
-        registry = getattr(self, "_decision_tickets", None)
-        if registry is not None:
-            for ticket in registry.cleanup(now):
+        self._prune_inflight(self._reply_in_progress, now, "reply_in_progress")
+        self._prune_inflight(self._passive_active, now, "passive")
+        limiter = getattr(self, "_decision_permits", None)
+        if limiter is not None:
+            limiter.set_max_concurrency(self._reply_config.reply_max_concurrency)
+            for permit in limiter.cleanup(now):
                 logger.info(
-                    "Iris Reply: cleaning up stale decision ticket "
-                    f"for group {ticket.group_id}, event={ticket.event_id}"
+                    "Iris Reply: cleaning up stale decision permit "
+                    f"for group {permit.group_id}, event={permit.event_id}"
                 )
-                if ticket.group_id not in self._reply_in_progress:
-                    self._triggering.pop(ticket.group_id, None)
 
     @staticmethod
     def _decision_event_id(event: AstrMessageEvent) -> str:
@@ -515,23 +505,70 @@ class IrisMemoryPlugin(Star):
         return f"event:{id(event)}"
 
     def _release_decision_ticket(self, group_id: str, ticket_id: str = "") -> None:
-        """仅由 ticket 所有者释放，避免迟到事件清掉新事件的决策状态。"""
-        registry = getattr(self, "_decision_tickets", None)
-        if registry is None:
-            self._triggering.pop(group_id, None)
+        """释放本次决策的在途许可。
+
+        携带 permit_id 时精确释放；遗留事件没有 permit_id 时按群释放最早
+        的一个许可，避免许可泄漏占满并发额度。
+        """
+        limiter = getattr(self, "_decision_permits", None)
+        if limiter is None:
             return
-        active = registry.get(group_id)
-        if active is not None and ticket_id and active.ticket_id != ticket_id:
-            return
-        registry.release(group_id, ticket_id)
-        self._triggering.pop(group_id, None)
+        if ticket_id:
+            limiter.release(ticket_id)
+        else:
+            limiter.release_group(group_id)
+
+    @staticmethod
+    def _prune_inflight(
+        buckets: dict[str, list[float]],
+        now: float,
+        label: str,
+    ) -> None:
+        """回收超时的在途记录；并发下同群可能有多条同时进行。"""
+        for group_id in list(buckets):
+            kept = [ts for ts in buckets[group_id] if now - ts <= _IRIS_ACTIVE_TIMEOUT]
+            if kept:
+                buckets[group_id] = kept
+                continue
+            buckets.pop(group_id, None)
+            logger.info(
+                "Iris Reply: cleaning up stale %s for group %s (timeout)",
+                label,
+                group_id,
+            )
 
     def _is_busy(self, group_id: str) -> bool:
-        return (
-            group_id in self._reply_in_progress
-            or group_id in self._triggering
-            or group_id in self._passive_active
-        )
+        """群是否已有被动回复在途。
+
+        主动决策与主动回复允许并发（受 reply_max_concurrency 限制）；
+        这里只阻止主动发起在被动回复未完成时插入。
+        """
+        return bool(self._passive_active.get(group_id))
+
+    @staticmethod
+    def _begin(buckets: dict[str, list[float]], group_id: str) -> None:
+        buckets.setdefault(group_id, []).append(time.time())
+
+    @staticmethod
+    def _end(buckets: dict[str, list[float]], group_id: str) -> None:
+        stamps = buckets.get(group_id)
+        if not stamps:
+            return
+        stamps.pop(0)
+        if not stamps:
+            buckets.pop(group_id, None)
+
+    def _begin_reply(self, group_id: str) -> None:
+        self._begin(self._reply_in_progress, group_id)
+
+    def _end_reply(self, group_id: str) -> None:
+        self._end(self._reply_in_progress, group_id)
+
+    def _begin_passive(self, group_id: str) -> None:
+        self._begin(self._passive_active, group_id)
+
+    def _end_passive(self, group_id: str) -> None:
+        self._end(self._passive_active, group_id)
 
     async def _kv_save(self, key: str, value: Any) -> None:
         await self.put_kv_data(key, value)
@@ -717,7 +754,7 @@ class IrisMemoryPlugin(Star):
 
         if event.is_at_or_wake_command:
             self._release_decision_ticket(group_id)
-            self._passive_active[group_id] = time.time()
+            self._begin_passive(group_id)
             event.set_extra("iris_mode", "passive")
             return
 
@@ -757,26 +794,33 @@ class IrisMemoryPlugin(Star):
                 logger.error(f"Iris Reply: failed to get provider ID for group {group_id}")
                 return
 
-        async with self._state.get_lock(group_id):
-            if group_id in self._triggering:
-                logger.debug(f"Iris Reply: trigger already in progress for group {group_id}")
-                return
-            event_id = self._decision_event_id(event)
-            registry = getattr(self, "_decision_tickets", None)
-            ticket = registry.claim(group_id, event_id) if registry else None
-            if registry is not None and ticket is None:
+        # 事件级许可：同群可并发，只受 reply_max_concurrency 限制
+        event_id = self._decision_event_id(event)
+        limiter = self._decision_permits
+        permit = limiter.claim(
+            group_id,
+            event_id,
+            max_concurrency=self._reply_config.reply_max_concurrency,
+        )
+        if permit is None:
+            if limiter.in_flight() >= limiter.max_concurrency:
+                logger.debug(
+                    "Iris Reply: decision concurrency limit reached (%d)，跳过本群 %s",
+                    limiter.max_concurrency,
+                    group_id,
+                )
+            else:
                 logger.debug(
                     f"Iris Reply: duplicate decision event rejected for group {group_id}, "
                     f"event={event_id}"
                 )
-                return
-            self._triggering[group_id] = time.time()
+            return
 
         event.set_extra("iris_decision", {
             "motive": motive,
             "provider_id": provider_id,
             "event_id": event_id,
-            "ticket_id": ticket.ticket_id if ticket else "",
+            "ticket_id": permit.permit_id,
         })
 
         event.is_at_or_wake_command = True
@@ -820,7 +864,7 @@ class IrisMemoryPlugin(Star):
 
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest) -> None:
-        # 1. 主动回复统一决策（仅处理 _triggering 中的群；可能 stop_event 终止请求）
+        # 1. 主动回复统一决策（仅处理携带 iris_decision 许可的事件；可能 stop_event 终止请求）
         if await self._handle_reply_decision(event):
             return
 
@@ -889,33 +933,24 @@ class IrisMemoryPlugin(Star):
             不再进行记忆注入。
         """
         group_id = event.get_group_id()
-        if not group_id or group_id not in self._triggering:
+        if not group_id:
             return False
 
         info = event.get_extra("iris_decision")
         if not info:
-            self._release_decision_ticket(group_id)
             return False
 
         motive = info.get("motive", "")
         provider_id = info.get("provider_id", "")
         ticket_id = str(info.get("ticket_id") or "")
         event_id = str(info.get("event_id") or "")
-        registry = getattr(self, "_decision_tickets", None)
-        if registry is not None:
-            active = registry.get(group_id)
-            # 旧测试/升级中的遗留事件没有 ticket_id，继续走兼容路径；生产事件
-            # 一旦携带 ticket，就必须同时匹配 ticket_id + event_id。
-            if ticket_id and not registry.owns(group_id, ticket_id, event_id):
+        limiter = getattr(self, "_decision_permits", None)
+        if limiter is not None and ticket_id:
+            # 许可已被超时回收或已释放：事件来迟，直接结束
+            if not limiter.owns(ticket_id, group_id, event_id):
                 logger.warning(
-                    f"Iris Reply: stale decision ticket rejected for group {group_id}, "
+                    f"Iris Reply: stale decision permit rejected for group {group_id}, "
                     f"event={event_id}"
-                )
-                event.stop_event()
-                return True
-            if active is not None and not ticket_id:
-                logger.warning(
-                    f"Iris Reply: decision event without owner ticket rejected for group {group_id}"
                 )
                 event.stop_event()
                 return True
@@ -976,13 +1011,6 @@ class IrisMemoryPlugin(Star):
             event.stop_event()
             return True
 
-        if group_id in self._passive_active:
-            logger.info(f"Iris Reply: aborting {motive} for group {group_id}, passive reply in progress")
-            await self._state.save_dirty(self._kv_save)
-            self._release_decision_ticket(group_id, ticket_id)
-            event.stop_event()
-            return True
-
         if decision.drifted:
             async with self._state.get_lock(group_id):
                 self._state.close_anchor(group_id)
@@ -1018,7 +1046,7 @@ class IrisMemoryPlugin(Star):
             event.stop_event()
             return True
 
-        self._reply_in_progress[group_id] = time.time()
+        self._begin_reply(group_id)
         self._release_decision_ticket(group_id, ticket_id)
 
         event.set_extra("iris_mode", motive)
@@ -1096,8 +1124,8 @@ class IrisMemoryPlugin(Star):
         mode = event.get_extra("iris_mode")
 
         if mode in ("chime_in", "follow_up"):
-            self._reply_in_progress.pop(group_id, None)
-            self._passive_active.pop(group_id, None)
+            self._end_reply(group_id)
+            self._end_passive(group_id)
 
             self._tool_ctx.clear_context()
             await self._state.save_dirty(self._kv_save)
@@ -1116,7 +1144,7 @@ class IrisMemoryPlugin(Star):
                 pass
             logger.info(f"Iris Reply: {mode} reply sent for group {group_id}")
         elif mode == "passive":
-            self._passive_active.pop(group_id, None)
+            self._end_passive(group_id)
 
             self._stats.record_passive_reply(group_id)
             await self._state.save_dirty(self._kv_save)

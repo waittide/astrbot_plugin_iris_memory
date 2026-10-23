@@ -7,6 +7,9 @@ import pytest
 
 from astrbot_plugin_iris_memory.iris_memory.proactive.admin import AdminCommands
 from astrbot_plugin_iris_memory.iris_memory.proactive.api import register_web_apis
+from astrbot_plugin_iris_memory.iris_memory.proactive.concurrency import (
+    DecisionPermitLimiter,
+)
 from astrbot_plugin_iris_memory.iris_memory.proactive.decision import (
     DecisionCore,
     DecisionRequest,
@@ -20,6 +23,13 @@ from astrbot_plugin_iris_memory.iris_memory.proactive.proactive import Proactive
 from astrbot_plugin_iris_memory.iris_memory.proactive.state import StateManager
 
 GID = "g1"
+
+
+def _permit_limiter() -> DecisionPermitLimiter:
+    """构造一个已发放许可的并发限制器（供直接调用决策路径的测试使用）。"""
+    limiter = DecisionPermitLimiter(max_concurrency=4, timeout_seconds=120)
+    limiter.claim(GID, "event-1")
+    return limiter
 
 
 def _message(content: str, timestamp: float) -> WindowMessage:
@@ -122,7 +132,7 @@ class TestRuntimeSafetyPaths:
         plugin._sliding_window = window
         plugin._decision_core = core
         plugin._stats = Mock()
-        plugin._triggering = {GID: 10.0}
+        plugin._decision_permits = _permit_limiter()
         plugin._kv_save = AsyncMock()
 
         event = Mock()
@@ -138,7 +148,7 @@ class TestRuntimeSafetyPaths:
         assert window.get_messages(GID) == []
         assert state.get_observation(GID) == ""
         assert state.get_anchor(GID).has_context is False
-        assert GID not in plugin._triggering
+        assert plugin._decision_permits.in_flight() == 0
         event.stop_event.assert_called_once()
         plugin._kv_save.assert_awaited()
 
@@ -164,7 +174,7 @@ class TestRuntimeSafetyPaths:
         plugin._sliding_window = window
         plugin._decision_core = core
         plugin._stats = Mock()
-        plugin._triggering = {GID: 10.0}
+        plugin._decision_permits = _permit_limiter()
         plugin._kv_save = AsyncMock()
 
         event = Mock()
