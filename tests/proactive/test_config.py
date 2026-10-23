@@ -3,8 +3,6 @@
 优先级：隐藏配置（hidden_get）> AstrBotConfig（平铺遗留值 / proactive 嵌套组）> 内置默认值。
 """
 
-import pytest
-
 from astrbot_plugin_iris_memory.iris_memory.proactive.config import ConfigManager
 
 
@@ -18,7 +16,6 @@ class TestDefaults:
         assert cm.provider_id == ""
         assert cm.window_size == 15
         assert cm.max_token == 3000
-        assert cm.quality_threshold == pytest.approx(0.2)
         assert cm.mute_period == (1, 0, 7, 0)
         assert cm.proactive_enabled is False
         assert cm.proactive_instruction == ""
@@ -97,16 +94,6 @@ class TestHiddenLayer:
         assert make_config(hidden={"reply_window_size": 1}).window_size == 5
         assert make_config(hidden={"reply_window_size": 999}).window_size == 30
 
-    def test_hidden_clamps_float(self, make_config):
-        assert (
-            make_config(hidden={"reply_quality_threshold": 9.9}).quality_threshold
-            == 1.0
-        )
-        assert (
-            make_config(hidden={"reply_quality_threshold": -1.0}).quality_threshold
-            == 0.0
-        )
-
     def test_hidden_bool(self, make_config):
         cm = make_config(cfg={"proactive": {"proactive_enabled": True}})
         assert cm.proactive_enabled is True
@@ -155,11 +142,11 @@ class TestLegacyOverridesMigration:
 
     def test_basic_keys_mapped_with_prefix(self):
         result = ConfigManager.legacy_overrides_to_hidden(
-            {"window_size": 20, "quality_threshold": 0.5}
+            {"window_size": 20, "follow_up_ttl": 30}
         )
         assert result == {
             "reply_window_size": 20,
-            "reply_quality_threshold": 0.5,
+            "reply_follow_up_ttl": 30,
         }
 
     def test_proactive_keys_keep_name(self):

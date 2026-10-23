@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -16,9 +15,6 @@ from .state import StateManager
 
 if TYPE_CHECKING:
     from astrbot.api.event import AstrMessageEvent
-
-_RE_DIGITS_ONLY = re.compile(r"[\d\s]+")
-_RE_NONALNUM_ONLY = re.compile(r"[\W_]+")
 
 
 @dataclass
@@ -48,21 +44,6 @@ class Gatekeeper:
         if not self._state.is_whitelisted(group_id):
             return False
         return True
-
-    def quality_score(self, text: str) -> float:
-        if not text or not text.strip():
-            return 0.0
-        stripped = text.strip()
-        if _RE_DIGITS_ONLY.fullmatch(stripped):
-            return 0.1
-        if len(stripped) <= 2:
-            return 0.2
-        if _RE_NONALNUM_ONLY.fullmatch(stripped):
-            return 0.1
-        # str.isalnum() 对 CJK 字符同样返回 True，无需额外的区间判断
-        alpha_count = sum(1 for c in stripped if c.isalnum())
-        ratio = alpha_count / len(stripped) if stripped else 0
-        return min(1.0, ratio)
 
 
 class SlidingWindow:

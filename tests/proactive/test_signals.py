@@ -207,3 +207,17 @@ class TestGatekeeperWhitelist:
         from astrbot_plugin_iris_memory.iris_memory.proactive import state as state_mod
 
         assert not hasattr(state_mod, "GroupState")
+
+
+def test_short_and_symbol_only_messages_enter_decision(gate):
+    """质量门控已删除：短消息、纯数字、纯符号都直接进入决策。"""
+    for text in ("1", "嗯嗯", "？？？", "😂😂😂", "hello", "123 456"):
+        assert gate.evaluate_message(GID, "u1", text) == "chime_in"
+
+
+def test_gatekeeper_has_no_quality_gate(nm_config):
+    """Gatekeeper 不再提供质量打分，消息质量门控整体移除。"""
+    cm, st, _ = _build(nm_config)
+    gk = Gatekeeper(cm, st)
+    assert not hasattr(gk, "quality_score")
+    assert not hasattr(cm, "quality_threshold")

@@ -784,13 +784,6 @@ class HiddenConfig:
             "group": "主动回复·触发门控",
         },
     )
-    reply_quality_threshold: float = field(
-        default=0.2,
-        metadata={
-            "description": "消息质量阈值(0-1)，低于此值的消息不进入滑动窗口、不参与触发评估",
-            "group": "主动回复·触发门控",
-        },
-    )
     reply_passive_watch_min_interval: int = field(
         default=600,
         metadata={

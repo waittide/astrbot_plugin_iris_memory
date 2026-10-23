@@ -733,11 +733,6 @@ class IrisMemoryPlugin(Star):
 
         # 发起后的首次接话：清除 pending，该消息直接获得一次跟进评估资格
         pending_reply = self._state.consume_initiate_pending(group_id)
-        is_followed = bool(sender_id and self._state.match_anchor_user(group_id, sender_id))
-
-        score = self._gatekeeper.quality_score(message_str)
-        if score < self._reply_config.quality_threshold and not is_followed and not pending_reply:
-            return
 
         message_timestamp = time.time()
         self._sliding_window.append(

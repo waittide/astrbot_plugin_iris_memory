@@ -19,7 +19,6 @@ _DEFAULTS = {
     "max_token": 3000,
     "follow_up_ttl": 10,
     "follow_up_aggregate_window": 6,
-    "quality_threshold": 0.2,
     "provider_id": "",
     "passive_watch_min_interval": 600,
     "reply_max_concurrency": 1,
@@ -45,7 +44,6 @@ _HIDDEN_KEY_MAP = {
     "max_token": "reply_max_token",
     "follow_up_ttl": "reply_follow_up_ttl",
     "follow_up_aggregate_window": "reply_follow_up_aggregate_window",
-    "quality_threshold": "reply_quality_threshold",
     "passive_watch_min_interval": "reply_passive_watch_min_interval",
     "reply_max_concurrency": "reply_max_concurrency",
     "passive_watch_enabled": "reply_passive_watch_enabled",
@@ -215,10 +213,6 @@ class ConfigManager:
     @property
     def follow_up_aggregate_window(self) -> int:
         return max(3, min(30, int(self._get("follow_up_aggregate_window"))))
-
-    @property
-    def quality_threshold(self) -> float:
-        return max(0.0, min(1.0, float(self._get("quality_threshold"))))
 
     @property
     def provider_id(self) -> str:
