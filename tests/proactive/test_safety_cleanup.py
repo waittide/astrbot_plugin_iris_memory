@@ -254,7 +254,6 @@ class TestRuntimeSafetyPaths:
         assert window.get_messages(GID) == []
         assert state.get_observation(GID) == ""
         assert state.get_anchor(GID).has_context is False
-        assert engine._skip_retry_after[GID] > 0
         save_fn.assert_awaited_once()
 
 

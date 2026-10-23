@@ -14,7 +14,6 @@ export interface ReplyWhitelistGroup {
   anchor_reason?: string
   anchor_bot_message?: string
   initiate_pending?: boolean
-  initiate_no_reply_streak?: number
 }
 
 export interface ReplyStatsGroup {

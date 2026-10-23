@@ -118,35 +118,25 @@ class TestTimerGate:
         self._prime_hazard(st)
         assert gate.evaluate_timer(GID, [old]) is None
 
-    def test_rolling_cap_blocks_and_resets_probability(self, nm_config, make_msg):
-        _, st, gate = self._timer_gate(nm_config, {"proactive_max_per_day": 1})
+    def test_no_daily_cap_or_streak_limit(self, nm_config, make_msg):
+        # 每日次数与无人接话上限已删除：历史计数不再阻断发起
+        _, st, gate = self._timer_gate(nm_config)
         st.record_initiate(GID, bot_message="大家好")
-        # 隔离 pending / 最小间隔因素，只验证每日上限
-        st.get_state(GID).initiate_pending_since = 0.0
-        st.get_state(GID).last_initiate_time = 0.0
-        old = make_msg(timestamp=time.time() - 1900)
-        self._prime_hazard(st)
-        assert gate.evaluate_timer(GID, [old]) is None
-        # 触达上限时概率时钟被推进，防止额度恢复瞬间点火
         data = st.get_state(GID)
-        assert data.initiate_hazard_probability == 0.0
-        assert time.time() - data.initiate_hazard_at < 5
-
-    def test_streak_cap_blocks(self, nm_config, make_msg):
-        _, st, gate = self._timer_gate(nm_config, {"proactive_max_streak": 1})
-        st.get_state(GID).initiate_no_reply_streak = 1
+        data.initiate_pending_since = 0.0
         old = make_msg(timestamp=time.time() - 1900)
         self._prime_hazard(st)
-        assert gate.evaluate_timer(GID, [old]) is None
+        with patch(
+            "astrbot_plugin_iris_memory.iris_memory.proactive.state.random.random",
+            return_value=0.0,
+        ):
+            assert gate.evaluate_timer(GID, [old]) == "initiate"
 
-    def test_min_interval_blocks(self, nm_config, make_msg):
-        _, st, gate = self._timer_gate(nm_config, {"proactive_min_interval": 60})
+    def test_no_min_interval_limit(self, nm_config, make_msg):
+        # 两次发起最小间隔已删除：刚发起过也能再次评估
+        _, st, gate = self._timer_gate(nm_config)
         old = make_msg(timestamp=time.time() - 1900)
         st.get_state(GID).last_initiate_time = time.time() - 100
-        self._prime_hazard(st)
-        assert gate.evaluate_timer(GID, [old]) is None
-        # 超过最小间隔后放行
-        st.get_state(GID).last_initiate_time = time.time() - 3700
         self._prime_hazard(st)
         with patch(
             "astrbot_plugin_iris_memory.iris_memory.proactive.state.random.random",

@@ -67,7 +67,6 @@ class GroupStateData:
     initiate_daily_count: int = 0
     initiate_count_date: str = ""
     initiate_pending_since: float = 0.0
-    initiate_no_reply_streak: int = 0
     initiate_timestamps: list[float] = field(default_factory=list)  # 滚动 24h 发起记录
     last_human_message_at: float = 0.0
     initiate_next_check_at: float = 0.0  # 每群独立的下一次候选时刻
@@ -134,14 +133,6 @@ class StateManager:
         rolling_count = len(data.initiate_timestamps)
         if data.initiate_daily_count != rolling_count:
             data.initiate_daily_count = rolling_count
-            self._mark_dirty(group_id, data)
-        # 无人接话改为滚动退避：满 24h 后自动恢复，而不是依赖零点清零。
-        if (
-            data.initiate_no_reply_streak > 0
-            and data.last_initiate_time > 0
-            and now - data.last_initiate_time >= self.INITIATE_ROLLING_WINDOW
-        ):
-            data.initiate_no_reply_streak = 0
             self._mark_dirty(group_id, data)
         return data
 
@@ -357,12 +348,11 @@ class StateManager:
         return self._ensure_group(group_id).initiate_pending_since > 0
 
     def consume_initiate_pending(self, group_id: str) -> bool:
-        """群友在发起后发言（接话）：清除 pending 并重置无人接话计数。"""
+        """群友在发起后发言（接话）：清除 pending。"""
         data = self._ensure_group(group_id)
         if data.initiate_pending_since <= 0:
             return False
         data.initiate_pending_since = 0.0
-        data.initiate_no_reply_streak = 0
         self._mark_dirty(group_id, data)
         return True
 
@@ -401,12 +391,11 @@ class StateManager:
         self._mark_dirty(group_id, data)
 
     def record_initiate_unanswered(self, group_id: str) -> None:
-        """发起后超时无人接话：清除 pending 并累计 streak。"""
+        """发起后超时无人接话：清除 pending（不做次数累计或抑制）。"""
         data = self.get_state(group_id)
         if data.initiate_pending_since <= 0:
             return
         data.initiate_pending_since = 0.0
-        data.initiate_no_reply_streak += 1
         self._mark_dirty(group_id, data)
 
     # ---- 主动发起风险率（概率门控）----
@@ -483,14 +472,12 @@ class StateManager:
             drift_factor = 1.0 + 1.5 * (
                 1.0 - (now - data.last_drift_time) / (drift_window * 3)
             )
-        fatigue_factor = 0.4 ** max(0, data.initiate_no_reply_streak)
         hazard_per_second = (
             (1.0 / baseline)
             * willingness_factor
             * quiet_factor
             * context_factor
             * drift_factor
-            * fatigue_factor
         )
         probability = 1.0 - math.exp(-hazard_per_second * elapsed)
         probability = max(0.0, min(0.85, probability))
@@ -535,7 +522,6 @@ class StateManager:
         data.initiate_daily_count = 0
         data.initiate_count_date = self._today()
         data.initiate_pending_since = 0.0
-        data.initiate_no_reply_streak = 0
         data.initiate_timestamps.clear()
         data.last_human_message_at = 0.0
         data.initiate_next_check_at = 0.0
@@ -684,7 +670,6 @@ class StateManager:
             "initiate_daily_count": data.initiate_daily_count,
             "initiate_count_date": data.initiate_count_date,
             "initiate_pending_since": data.initiate_pending_since,
-            "initiate_no_reply_streak": data.initiate_no_reply_streak,
             "initiate_timestamps": data.initiate_timestamps,
             "last_human_message_at": data.last_human_message_at,
             "initiate_next_check_at": data.initiate_next_check_at,
@@ -737,7 +722,6 @@ class StateManager:
             initiate_daily_count=len(timestamps),
             initiate_count_date=d.get("initiate_count_date", ""),
             initiate_pending_since=d.get("initiate_pending_since", 0.0),
-            initiate_no_reply_streak=d.get("initiate_no_reply_streak", 0),
             initiate_timestamps=timestamps,
             last_human_message_at=d.get("last_human_message_at", 0.0),
             initiate_next_check_at=d.get("initiate_next_check_at", 0.0),
@@ -777,6 +761,4 @@ class StateManager:
         if data.initiate_pending_since > 0:
             waiting = (time.time() - data.initiate_pending_since) / 60
             lines.append(f"  发起接话等待中: {waiting:.1f} 分钟")
-        if data.initiate_no_reply_streak > 0:
-            lines.append(f"  无人接话 streak: {data.initiate_no_reply_streak}")
         return "\n".join(lines)

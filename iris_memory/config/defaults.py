@@ -843,20 +843,6 @@ class HiddenConfig:
             "group": "主动回复·主动发起",
         },
     )
-    proactive_max_per_day: int = field(
-        default=2,
-        metadata={
-            "description": "滚动24小时最大发起次数，避免零点统一重置形成固定时间槽",
-            "group": "主动回复·主动发起",
-        },
-    )
-    proactive_min_interval: int = field(
-        default=360,
-        metadata={
-            "description": "两次发起最小间隔(分钟)，同一群两次主动发起之间的最短时间",
-            "group": "主动回复·主动发起",
-        },
-    )
     proactive_drift_delay: int = field(
         default=15,
         metadata={
@@ -868,13 +854,6 @@ class HiddenConfig:
         default=30,
         metadata={
             "description": "发起接话等待(分钟)，发起后等待群友接话的超时时间",
-            "group": "主动回复·主动发起",
-        },
-    )
-    proactive_max_streak: int = field(
-        default=2,
-        metadata={
-            "description": "无人接话上限(次)，连续发起无人接话达到此次数后当天不再发起",
             "group": "主动回复·主动发起",
         },
     )

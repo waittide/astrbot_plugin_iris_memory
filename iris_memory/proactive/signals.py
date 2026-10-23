@@ -48,27 +48,18 @@ class SignalGate:
         """定时器唤醒门控，返回 "initiate" | None。
 
         达到最小静默底线后按风险率进行一次独立概率试验；风险率综合静默
-        时长、回复意愿、话题状态和无人接话疲劳，不存在必然点火阈值。
+        时长、回复意愿和话题状态。不设每日次数、发起间隔或无人接话上限。
         """
         if not self._config.enabled or not self._config.proactive_enabled:
             return None
         data = self._state.get_state(group_id)
         if not messages:
             return None
+        # 等待群友接话期间不重复发起（互斥）
         if data.initiate_pending_since > 0:
             return None
 
         now = time.time()
-        if (
-            data.initiate_daily_count >= self._config.proactive_max_per_day
-            or data.initiate_no_reply_streak >= self._config.proactive_max_streak
-        ):
-            # 滚动额度/无人接话退避期间推进概率时钟，防止解禁瞬间点火。
-            self._state.reset_initiate_drive(group_id)
-            return None
-        if now - data.last_initiate_time < self._config.proactive_min_interval * 60:
-            return None
-
         last_activity = max(messages[-1].timestamp, data.last_human_message_at)
         quiet = max(0.0, now - last_activity)
         fired = self._state.evaluate_initiate_hazard(

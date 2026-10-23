@@ -26,11 +26,8 @@ _DEFAULTS = {
     "proactive_enabled": False,
     "proactive_check_interval": 5,
     "proactive_quiet_minutes": 120,
-    "proactive_max_per_day": 2,
-    "proactive_min_interval": 360,
     "proactive_drift_delay": 15,
     "proactive_pending_timeout": 30,
-    "proactive_max_streak": 2,
     "proactive_instruction": "",
     "proactive_max_message_len": 300,
 }
@@ -52,11 +49,8 @@ _HIDDEN_KEY_MAP = {
     "passive_watch_enabled": "reply_passive_watch_enabled",
     "proactive_check_interval": "proactive_check_interval",
     "proactive_quiet_minutes": "proactive_quiet_minutes",
-    "proactive_max_per_day": "proactive_max_per_day",
-    "proactive_min_interval": "proactive_min_interval",
     "proactive_drift_delay": "proactive_drift_delay",
     "proactive_pending_timeout": "proactive_pending_timeout",
-    "proactive_max_streak": "proactive_max_streak",
     "proactive_instruction": "proactive_instruction",
     "proactive_max_message_len": "proactive_max_message_len",
 }
@@ -252,24 +246,12 @@ class ConfigManager:
         return max(30, min(720, int(self._get("proactive_quiet_minutes"))))
 
     @property
-    def proactive_max_per_day(self) -> int:
-        return max(1, min(10, int(self._get("proactive_max_per_day"))))
-
-    @property
-    def proactive_min_interval(self) -> int:
-        return max(60, min(1440, int(self._get("proactive_min_interval"))))
-
-    @property
     def proactive_drift_delay(self) -> int:
         return max(5, min(120, int(self._get("proactive_drift_delay"))))
 
     @property
     def proactive_pending_timeout(self) -> int:
         return max(5, min(120, int(self._get("proactive_pending_timeout"))))
-
-    @property
-    def proactive_max_streak(self) -> int:
-        return max(1, min(5, int(self._get("proactive_max_streak"))))
 
     @property
     def proactive_instruction(self) -> str:

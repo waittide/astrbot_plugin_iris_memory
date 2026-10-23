@@ -122,35 +122,30 @@ class TestInitiateAccounting:
         assert data.initiate_hazard_probability == 0.0
         assert data.initiate_hazard_at > 0
 
-    def test_consume_pending_resets_streak(self, state):
+    def test_consume_pending_clears_flag(self, state):
         state.record_initiate(GID)
         data = state.get_state(GID)
-        data.initiate_no_reply_streak = 2
         assert state.consume_initiate_pending(GID) is True
         assert data.initiate_pending_since == 0.0
-        assert data.initiate_no_reply_streak == 0
         assert state.consume_initiate_pending(GID) is False
 
-    def test_unanswered_increments_streak(self, state):
+    def test_unanswered_clears_pending_without_suppression(self, state):
         state.record_initiate(GID)
         state.record_initiate_unanswered(GID)
         data = state.get_state(GID)
         assert data.initiate_pending_since == 0.0
-        assert data.initiate_no_reply_streak == 1
-        # 无 pending 时重复调用不累计
+        # 无 pending 时重复调用无副作用
         state.record_initiate_unanswered(GID)
-        assert data.initiate_no_reply_streak == 1
+        assert data.initiate_pending_since == 0.0
 
     def test_rolling_window_prunes_without_midnight_reset(self, state):
         data = state.get_state(GID)
         now = time.time()
         data.initiate_timestamps = [now - 25 * 3600, now - 60]
         data.last_initiate_time = now - 60
-        data.initiate_no_reply_streak = 3
         refreshed = state.get_state(GID)
         assert refreshed.initiate_daily_count == 1
         assert refreshed.initiate_timestamps == [data.initiate_timestamps[0]]
-        assert refreshed.initiate_no_reply_streak == 3
 
 
 class TestInitiateHazard:

@@ -20,10 +20,6 @@ from .stats import StatsCollector
 from .time_hint import resolve_datetime_reminder, wrap_system_reminder
 from ..llm_modules import PROACTIVE_REPLY_INITIATE
 
-# 发起评估被 LLM 否决后的重试间隔（秒），仅内存记录
-_SKIP_RETRY_SECONDS = 30 * 60
-
-
 def _record_initiate_send(group_id: str, text: str, success: bool, error: str = "") -> None:
     """写入统一运行日志（proactive 类型，主动发起直发结果）。"""
     try:
@@ -88,7 +84,6 @@ class ProactiveEngine:
         self._task: asyncio.Task | None = None
         self._wake_event = asyncio.Event()
         self._initiating: set[str] = set()
-        self._skip_retry_after: dict[str, float] = {}
 
     def is_initiating(self, group_id: str) -> bool:
         return group_id in self._initiating
@@ -199,14 +194,6 @@ class ProactiveEngine:
             if self._is_busy(group_id) or group_id in self._initiating:
                 self._schedule_group(group_id, now=now)
                 continue
-            retry_after = self._skip_retry_after.get(group_id, 0)
-            if retry_after > now:
-                self._schedule_group(
-                    group_id,
-                    now=now,
-                    not_before=retry_after + random.uniform(30.0, 180.0),
-                )
-                continue
             messages = self._window.get_messages(group_id)
             async with self._state.get_lock(group_id):
                 motive = self._signals.evaluate_timer(group_id, messages)
@@ -267,7 +254,6 @@ class ProactiveEngine:
 
             if outcome.error or outcome.decision is None:
                 self._stats.record_decision_error(group_id, "initiate")
-                self._skip_retry_after[group_id] = time.time() + _SKIP_RETRY_SECONDS
                 if outcome.error_kind == "input_content_safety_1026":
                     async with self._state.get_lock(group_id):
                         cleanup = self._core.clear_rejected_dynamic_context(
@@ -312,7 +298,6 @@ class ProactiveEngine:
                     self._state.record_drift(group_id)
 
             if decision.parse_failed:
-                self._skip_retry_after[group_id] = time.time() + _SKIP_RETRY_SECONDS
                 await self._save_fn()
                 return "决策结果解析失败"
 
@@ -320,7 +305,6 @@ class ProactiveEngine:
                 # LLM 否决：重置概率时钟，避免短时间连续询问模型。
                 async with self._state.get_lock(group_id):
                     self._state.reset_initiate_drive(group_id)
-                self._skip_retry_after[group_id] = time.time() + _SKIP_RETRY_SECONDS
                 await self._save_fn()
                 return "LLM 决定暂不发起"
 
@@ -336,7 +320,6 @@ class ProactiveEngine:
             if not text:
                 text = decision.message.strip()
             if not text:
-                self._skip_retry_after[group_id] = time.time() + _SKIP_RETRY_SECONDS
                 await self._save_fn()
                 return "发言文本生成失败"
 
@@ -381,12 +364,7 @@ class ProactiveEngine:
                     keywords=decision.watch_keywords or None,
                     reason=decision.why_now or decision.why,
                 )
-            now = time.time()
-            self._schedule_group(
-                group_id,
-                now=now,
-                not_before=now + self._config.proactive_min_interval * 60.0,
-            )
+            self._schedule_group(group_id, now=time.time())
             await self._save_fn()
             if self._on_initiate_sent is not None:
                 try:

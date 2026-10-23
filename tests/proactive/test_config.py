@@ -21,7 +21,6 @@ class TestDefaults:
         assert cm.quality_threshold == pytest.approx(0.2)
         assert cm.mute_period == (1, 0, 7, 0)
         assert cm.proactive_enabled is False
-        assert cm.proactive_max_per_day == 2
         assert cm.proactive_instruction == ""
 
     def test_non_dict_proactive_group_ignored(self, make_config):
@@ -165,9 +164,12 @@ class TestLegacyOverridesMigration:
 
     def test_proactive_keys_keep_name(self):
         result = ConfigManager.legacy_overrides_to_hidden(
-            {"proactive_max_per_day": 3, "proactive_min_interval": 200}
+            {"proactive_quiet_minutes": 60, "proactive_check_interval": 8}
         )
-        assert result == {"proactive_max_per_day": 3, "proactive_min_interval": 200}
+        assert result == {
+            "proactive_quiet_minutes": 60,
+            "proactive_check_interval": 8,
+        }
 
     def test_mute_period_split_into_four_keys(self):
         result = ConfigManager.legacy_overrides_to_hidden(

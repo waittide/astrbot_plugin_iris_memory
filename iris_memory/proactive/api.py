@@ -108,7 +108,6 @@ def register_web_apis(
             entry["anchor_reason"] = anchor.reason
             entry["anchor_bot_message"] = anchor.bot_message
             entry["initiate_pending"] = data.initiate_pending_since > 0
-            entry["initiate_no_reply_streak"] = data.initiate_no_reply_streak
             groups.append(entry)
         return jsonify(groups)
 
