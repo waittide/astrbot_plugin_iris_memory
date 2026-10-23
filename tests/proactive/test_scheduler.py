@@ -121,7 +121,7 @@ class TestSendGuard:
                     '"why_now":"现在是之前约好的回访时间",'
                     '"topic_source":"time_context","obs":"在聊计划",'
                     '"watch":[],"watch_keywords":[],"why":"回访",'
-                    '"drifted":false,"cooldown":0}'
+                    '"drifted":false}'
                 )
             now = time.time()
             holder["window"].append(GID, WindowMessage("u2", "U2", "刚来一条", now))

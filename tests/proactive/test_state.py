@@ -1,127 +1,13 @@
 """proactive.state.StateManager 状态机测试
 
-覆盖：backoff 升级与衰减、boost 窗口、冷却设置/检查、
-锚点 TTL 过期、initiate pending 记账。
+覆盖：锚点 TTL 过期、willingness、initiate pending 记账与风险率。
 """
 
 import time
 
-from astrbot_plugin_iris_memory.iris_memory.proactive.prompts import MAX_BACKOFF_LEVEL
-from astrbot_plugin_iris_memory.iris_memory.proactive.state import GroupState, StateManager
+from astrbot_plugin_iris_memory.iris_memory.proactive.state import StateManager
 
 GID = "g1"
-
-
-def _state(nm_config, overrides=None):
-    cm = nm_config(overrides=overrides)
-    return StateManager(cm)
-
-
-class TestCooldown:
-    def test_set_and_check(self, state):
-        minutes = state.set_cooldown(GID, 5)
-        assert minutes == 5
-        data = state.get_state(GID)
-        assert data.state == GroupState.COOLDOWN
-        assert data.cooldown_until > time.time()
-
-    def test_minutes_clamped(self, state):
-        assert state.set_cooldown(GID, 0) == 1
-        assert state.set_cooldown(GID, 999) == 120
-
-    def test_cooldown_auto_expires(self, state):
-        state.set_cooldown(GID, 1)
-        state.get_state(GID).cooldown_until = time.time() - 1
-        assert state.get_state(GID).state == GroupState.IDLE
-
-
-class TestBackoff:
-    def test_escalation_raises_thresholds(self, nm_config):
-        # medium 意愿：n = int(10 * 1.3^level * 0.85)，t = int(30 * 1.3^level * 0.85)
-        st = _state(nm_config, {"default_n": 10, "default_t": 30})
-        assert st.get_effective_thresholds(GID) == (8, 25)
-        st.record_skip_reply(GID)
-        st.record_skip_reply(GID)
-        assert st.get_state(GID).backoff_level == 2
-        assert st.get_effective_thresholds(GID) == (14, 43)
-
-    def test_escalation_capped(self, state):
-        for _ in range(MAX_BACKOFF_LEVEL + 5):
-            state.record_skip_reply(GID)
-        assert state.get_state(GID).backoff_level == MAX_BACKOFF_LEVEL
-
-    def test_skip_resets_consecutive(self, state):
-        state.get_state(GID).consecutive_replies = 3
-        state.record_skip_reply(GID)
-        assert state.get_state(GID).consecutive_replies == 0
-
-    def test_decay_after_interval(self, nm_config):
-        st = _state(nm_config, {"default_n": 10, "default_t": 30})
-        data = st.get_state(GID)
-        data.backoff_level = 3
-        data.last_backoff_time = time.time() - 650  # BACKOFF_DECAY_INTERVAL=300 → 降 2 级
-        st.get_effective_thresholds(GID)
-        assert data.backoff_level == 1
-
-    def test_no_decay_before_interval(self, nm_config):
-        st = _state(nm_config, {"default_n": 10, "default_t": 30})
-        data = st.get_state(GID)
-        data.backoff_level = 3
-        data.last_backoff_time = time.time() - 100
-        st.get_effective_thresholds(GID)
-        assert data.backoff_level == 3
-
-    def test_actual_reply_reduces_backoff(self, state):
-        data = state.get_state(GID)
-        data.backoff_level = 2
-        state.record_actual_reply(GID)
-        assert data.backoff_level == 1
-        assert data.consecutive_replies == 1
-
-    def test_actual_reply_no_reduce_when_consecutive(self, state):
-        data = state.get_state(GID)
-        data.backoff_level = 2
-        data.consecutive_replies = 2
-        state.record_actual_reply(GID)
-        assert data.backoff_level == 2
-        assert data.consecutive_replies == 3
-
-
-class TestBoost:
-    def test_boost_window_set_on_reply(self, nm_config):
-        st = _state(nm_config, {"default_n": 10, "default_t": 30})
-        st.record_actual_reply(GID)
-        data = st.get_state(GID)
-        assert data.boost_initial == 0.6  # 默认 boost_factor
-        assert data.boost_set_at > 0
-        assert data.boost_until > time.time()
-        # combined = 1.0 * 0.6：阈值临时降低
-        assert st.get_effective_thresholds(GID) == (5, 15)
-
-    def test_boost_expires(self, nm_config):
-        st = _state(nm_config, {"default_n": 10, "default_t": 30})
-        st.record_actual_reply(GID)
-        data = st.get_state(GID)
-        data.boost_until = time.time() - 1
-        assert st.get_effective_thresholds(GID) == (8, 25)
-
-    def test_boost_linear_decay(self, nm_config):
-        st = _state(nm_config, {"default_n": 10, "default_t": 30})
-        data = st.get_state(GID)
-        # 进度 0.5：boost = 0.6 + (1 - 0.6) * 0.5 = 0.8
-        data.boost_initial = 0.6
-        data.boost_set_at = time.time() - 450
-        data.boost_until = time.time() + 450
-        assert st.get_effective_thresholds(GID) == (6, 20)
-
-    def test_fatigue_after_max_boosted_replies(self, state):
-        data = state.get_state(GID)
-        data.consecutive_replies = 5  # max_boosted_replies 默认 5
-        state.record_actual_reply(GID)
-        assert data.consecutive_replies == 6
-        assert data.boost_initial == 1.0  # 超出后不再 boost
-        assert data.backoff_level == 1  # fatigue = min(6 - 5, 5)
-        assert data.last_backoff_time > 0
 
 
 class TestAnchor:
@@ -153,12 +39,6 @@ class TestAnchor:
         state.add_anchor_watch(GID, keywords=["天气"], ttl_minutes=-1)
         assert state.match_anchor_keyword(GID, "天气") == []
         assert state.get_anchor(GID).active is False
-
-    def test_match_blocked_in_cooldown(self, state):
-        state.add_anchor_watch(GID, users=["u1"], keywords=["天气"])
-        state.set_cooldown(GID, 5)
-        assert state.match_anchor_user(GID, "u1") is False
-        assert state.match_anchor_keyword(GID, "天气") == []
 
     def test_write_replaces_old_anchor(self, state):
         state.write_anchor(GID, kind="chime_in", users=["u1"])
@@ -202,7 +82,6 @@ class TestAnchor:
 
     def test_clear_decision_context_preserves_unrelated_state(self, state):
         state.set_willingness(GID, "high")
-        state.get_state(GID).msg_count = 7
         state.set_observation(GID, "旧观察")
         state.write_anchor(
             GID,
@@ -221,7 +100,6 @@ class TestAnchor:
         assert state.get_anchor(GID).has_context is False
         assert state.get_anchor(GID).topic == ""
         assert state.get_willingness(GID) == "high"
-        assert state.get_state(GID).msg_count == 7
 
 
 class TestInitiateAccounting:
@@ -319,9 +197,12 @@ class TestInitiateHazard:
         now = time.time()
         data = state.get_state(GID)
         data.initiate_hazard_at = now - 900
-        assert state.evaluate_initiate_hazard(
-            GID, now=now, quiet_seconds=9999, freeze=True, random_value=0.0
-        ) is False
+        assert (
+            state.evaluate_initiate_hazard(
+                GID, now=now, quiet_seconds=9999, freeze=True, random_value=0.0
+            )
+            is False
+        )
         assert data.initiate_hazard_probability == 0.0
         assert data.initiate_hazard_at == now
 
@@ -354,18 +235,3 @@ class TestInitiateHazard:
         assert restored.initiate_next_check_at == 13000.0
         assert restored.initiate_hazard_at == 12345.0
         assert restored.initiate_hazard_probability == 0.23
-
-
-class TestDetectRateLimit:
-    def test_can_detect_fresh_group(self, state):
-        assert state.can_detect(GID) is True
-
-    def test_record_detect_time_blocks(self, state):
-        state.record_detect_time(GID)
-        assert state.can_detect(GID) is False
-
-    def test_follow_up_half_interval(self, state):
-        # 默认 trigger_min_interval=30s，follow_up 减半为 15s
-        state.get_state(GID).last_detect_time = time.time() - 20
-        assert state.can_detect(GID) is False
-        assert state.can_detect(GID, follow_up=True) is True

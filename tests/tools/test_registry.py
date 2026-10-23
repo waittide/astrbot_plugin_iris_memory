@@ -9,10 +9,14 @@ from astrbot.core.star.context import Context
 from astrbot_plugin_iris_memory.iris_memory.proactive.config import ConfigManager
 from astrbot_plugin_iris_memory.iris_memory.proactive.state import StateManager
 from astrbot_plugin_iris_memory.iris_memory.proactive.tools import ToolContext
-from astrbot_plugin_iris_memory.iris_memory.tools import EXPECTED_TOOL_NAMES, build_llm_tools, register_llm_tools
+from astrbot_plugin_iris_memory.iris_memory.tools import (
+    EXPECTED_TOOL_NAMES,
+    build_llm_tools,
+    register_llm_tools,
+)
 from astrbot_plugin_iris_memory.iris_memory.tools.registry import _validate_tools
 
-# 9 个工具的精确 Schema 快照。注册重构必须保持 Schema 深度相等，
+# 8 个工具的精确 Schema 快照。注册重构必须保持 Schema 深度相等，
 # 任何调整（新增 required/default/minimum/maximum、修改类型）都应单独提交。
 EXPECTED_SCHEMAS = {
     "save_knowledge": {
@@ -206,15 +210,6 @@ EXPECTED_SCHEMAS = {
             },
         },
     },
-    "set_cooldown": {
-        "type": "object",
-        "properties": {
-            "minutes": {
-                "type": "number",
-                "description": "冷却时间（分钟），范围 1-120，默认 5",
-            },
-        },
-    },
 }
 
 assert set(EXPECTED_SCHEMAS) == EXPECTED_TOOL_NAMES
@@ -243,8 +238,8 @@ def _make_context() -> Context:
     return context
 
 
-def test_build_returns_nine_tools(tools):
-    assert len(tools) == 9
+def test_build_returns_eight_tools(tools):
+    assert len(tools) == 8
 
 
 def test_tool_names_match_expected(tools):
@@ -318,8 +313,8 @@ def test_register_writes_plugin_ownership(state, tool_context):
     )
 
     tools = context.provider_manager.llm_tools.func_list
-    assert len(tools) == 9
-    assert len(registered) == 9
+    assert len(tools) == 8
+    assert len(registered) == 8
     assert {tool.handler_module_path for tool in tools} == {
         "data.plugins.astrbot_plugin_iris_memory.main"
     }
@@ -347,7 +342,7 @@ def test_double_registration_replaces_without_duplicates(state, tool_context):
     )
 
     tools = context.provider_manager.llm_tools.func_list
-    assert len(tools) == 9
+    assert len(tools) == 8
     assert {tool.name for tool in tools} == EXPECTED_TOOL_NAMES
 
     first_by_name = {tool.name: tool for tool in first}

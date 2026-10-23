@@ -7,9 +7,7 @@ import pytest
 
 from astrbot_plugin_iris_memory.iris_memory.proactive.admin import AdminCommands
 from astrbot_plugin_iris_memory.iris_memory.proactive.api import register_web_apis
-from astrbot_plugin_iris_memory.iris_memory.proactive.config import ConfigManager
 from astrbot_plugin_iris_memory.iris_memory.proactive.decision import (
-    INPUT_SAFETY_COOLDOWN_MINUTES,
     DecisionCore,
     DecisionRequest,
 )
@@ -19,7 +17,7 @@ from astrbot_plugin_iris_memory.iris_memory.proactive.perception import (
     WindowMessage,
 )
 from astrbot_plugin_iris_memory.iris_memory.proactive.proactive import ProactiveEngine
-from astrbot_plugin_iris_memory.iris_memory.proactive.state import GroupState, StateManager
+from astrbot_plugin_iris_memory.iris_memory.proactive.state import StateManager
 
 GID = "g1"
 
@@ -56,7 +54,9 @@ async def _rejected_outcome(core: DecisionCore, *, motive: str = "chime_in"):
 
 class TestCoreSafetyCleanup:
     @pytest.mark.asyncio
-    async def test_removes_rejected_snapshot_but_preserves_new_messages(self, nm_config):
+    async def test_removes_rejected_snapshot_but_preserves_new_messages(
+        self, nm_config
+    ):
         _, state, window, _, core = _components(nm_config)
         state.set_willingness(GID, "high")
         state.set_observation(GID, "疑似源头观察")
@@ -111,7 +111,9 @@ class TestRuntimeSafetyPaths:
 
         plugin = object.__new__(IrisMemoryPlugin)
         plugin.context = SimpleNamespace(
-            llm_generate=AsyncMock(side_effect=RuntimeError("input new_sensitive (1026)"))
+            llm_generate=AsyncMock(
+                side_effect=RuntimeError("input new_sensitive (1026)")
+            )
         )
         plugin._llm_manager = SimpleNamespace(
             generate_direct=plugin.context.llm_generate
@@ -136,7 +138,6 @@ class TestRuntimeSafetyPaths:
         assert window.get_messages(GID) == []
         assert state.get_observation(GID) == ""
         assert state.get_anchor(GID).has_context is False
-        assert state.get_state(GID).state == GroupState.COOLDOWN
         assert GID not in plugin._triggering
         event.stop_event.assert_called_once()
         plugin._kv_save.assert_awaited()
@@ -147,7 +148,9 @@ class TestRuntimeSafetyPaths:
 
         _, state, window, _, core = _components(nm_config)
         state.set_observation(GID, "应保留的观察")
-        state.write_anchor(GID, kind="follow_up", bot_message="应保留的回复", users=["u1"])
+        state.write_anchor(
+            GID, kind="follow_up", bot_message="应保留的回复", users=["u1"]
+        )
         window.append(GID, _message("应保留的消息", 10.0))
 
         plugin = object.__new__(IrisMemoryPlugin)
@@ -175,7 +178,6 @@ class TestRuntimeSafetyPaths:
         assert [msg.content for msg in window.get_messages(GID)] == ["应保留的消息"]
         assert state.get_observation(GID) == "应保留的观察"
         assert state.get_anchor(GID).bot_message == "应保留的回复"
-        assert state.get_state(GID).state == GroupState.IDLE
 
     @pytest.mark.asyncio
     async def test_passive_watch_1026_does_not_restore_fallback_anchor(self, nm_config):
@@ -189,7 +191,9 @@ class TestRuntimeSafetyPaths:
 
         plugin = object.__new__(IrisMemoryPlugin)
         plugin.context = SimpleNamespace(
-            llm_generate=AsyncMock(side_effect=RuntimeError("input new_sensitive (1026)"))
+            llm_generate=AsyncMock(
+                side_effect=RuntimeError("input new_sensitive (1026)")
+            )
         )
         plugin._llm_manager = SimpleNamespace(
             generate_direct=plugin.context.llm_generate
@@ -211,7 +215,6 @@ class TestRuntimeSafetyPaths:
         assert state.get_observation(GID) == ""
         assert state.get_anchor(GID).has_context is False
         assert state.get_anchor(GID).bot_message == ""
-        assert state.get_state(GID).state == GroupState.COOLDOWN
 
     @pytest.mark.asyncio
     async def test_timer_initiate_1026_uses_same_cleanup(self, nm_config):
@@ -224,7 +227,9 @@ class TestRuntimeSafetyPaths:
         window.append(GID, _message("疑似群消息", 10.0))
 
         context = SimpleNamespace(
-            llm_generate=AsyncMock(side_effect=RuntimeError("input new_sensitive (1026)"))
+            llm_generate=AsyncMock(
+                side_effect=RuntimeError("input new_sensitive (1026)")
+            )
         )
         save_fn = AsyncMock()
         engine = ProactiveEngine(
@@ -249,12 +254,8 @@ class TestRuntimeSafetyPaths:
         assert window.get_messages(GID) == []
         assert state.get_observation(GID) == ""
         assert state.get_anchor(GID).has_context is False
-        data = state.get_state(GID)
-        assert data.state == GroupState.COOLDOWN
-        assert data.cooldown_until > 0
         assert engine._skip_retry_after[GID] > 0
         save_fn.assert_awaited_once()
-        assert INPUT_SAFETY_COOLDOWN_MINUTES == 30
 
 
 class TestResetPaths:
@@ -294,7 +295,9 @@ class TestResetPaths:
         handlers = {}
         context = Mock()
         context.register_web_api.side_effect = (
-            lambda path, handler, _methods, _description: handlers.__setitem__(path, handler)
+            lambda path, handler, _methods, _description: handlers.__setitem__(
+                path, handler
+            )
         )
         kv_save = AsyncMock()
         register_web_apis(

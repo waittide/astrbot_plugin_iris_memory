@@ -44,11 +44,6 @@ class GroupStats:
     last_reply_time: float = 0.0
     current_state: str = "idle"
     willingness: str = "medium"
-    msg_count: int = 0
-    effective_n: int = 0
-    effective_t: int = 0
-    backoff_level: int = 0
-    consecutive_replies: int = 0
     initiate_daily_count: int = 0
     initiate_rolling_24h_count: int = 0
     initiate_hazard_probability: float = 0.0
@@ -146,11 +141,6 @@ class StatsCollector:
         group_id: str,
         state: str,
         willingness: str,
-        msg_count: int,
-        effective_n: int,
-        effective_t: int,
-        backoff_level: int,
-        consecutive_replies: int,
         initiate_daily_count: int,
         initiate_rolling_24h_count: int,
         initiate_hazard_probability: float,
@@ -161,11 +151,6 @@ class StatsCollector:
         gs = self._ensure_group(group_id)
         gs.current_state = state
         gs.willingness = willingness
-        gs.msg_count = msg_count
-        gs.effective_n = effective_n
-        gs.effective_t = effective_t
-        gs.backoff_level = backoff_level
-        gs.consecutive_replies = consecutive_replies
         gs.initiate_daily_count = initiate_daily_count
         gs.initiate_rolling_24h_count = initiate_rolling_24h_count
         gs.initiate_hazard_probability = initiate_hazard_probability
@@ -187,11 +172,6 @@ class StatsCollector:
             "last_reply_time": gs.last_reply_time,
             "current_state": gs.current_state,
             "willingness": gs.willingness,
-            "msg_count": gs.msg_count,
-            "effective_n": gs.effective_n,
-            "effective_t": gs.effective_t,
-            "backoff_level": gs.backoff_level,
-            "consecutive_replies": gs.consecutive_replies,
             "initiate_daily_count": gs.initiate_daily_count,
             "initiate_rolling_24h_count": gs.initiate_rolling_24h_count,
             "initiate_hazard_probability": gs.initiate_hazard_probability,

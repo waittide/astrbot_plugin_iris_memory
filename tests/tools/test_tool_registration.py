@@ -1,4 +1,4 @@
-"""Regression tests for AstrBot plugin ownership of all 9 LLM tools."""
+"""Regression tests for AstrBot plugin ownership of all 8 LLM tools."""
 
 from types import SimpleNamespace
 
@@ -31,7 +31,7 @@ def test_all_tools_are_owned_by_plugin_module():
     plugin._register_llm_tools()
 
     tools = context.provider_manager.llm_tools.func_list
-    assert len(tools) == 9
+    assert len(tools) == 8
     assert {tool.name for tool in tools} == EXPECTED_TOOL_NAMES
     assert {tool.handler_module_path for tool in tools} == {OWNER_MODULE}
     assert not any(
@@ -44,7 +44,7 @@ def test_plugin_keeps_registered_tool_references():
     plugin._register_llm_tools()
 
     registered = plugin._registered_llm_tools
-    assert len(registered) == 9
+    assert len(registered) == 8
     tools = context.provider_manager.llm_tools.func_list
     assert all(tool in registered for tool in tools)
 

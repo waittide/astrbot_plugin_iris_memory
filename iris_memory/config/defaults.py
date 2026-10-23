@@ -784,13 +784,6 @@ class HiddenConfig:
             "group": "主动回复·触发门控",
         },
     )
-    reply_trigger_min_interval: int = field(
-        default=30,
-        metadata={
-            "description": "触发最小间隔(秒)，同一群两次 LLM 决策调用之间的最短时间",
-            "group": "主动回复·触发门控",
-        },
-    )
     reply_passive_watch_min_interval: int = field(
         default=600,
         metadata={
@@ -805,21 +798,6 @@ class HiddenConfig:
             "group": "主动回复·触发门控",
         },
     )
-    reply_default_n: int = field(
-        default=15,
-        metadata={
-            "description": "消息计数阈值 N，每收到 N 条有效消息触发一次采样评估",
-            "group": "主动回复·触发门控",
-        },
-    )
-    reply_default_t: int = field(
-        default=30,
-        metadata={
-            "description": "时间间隔阈值 T(分钟)，距上次采样超过 T 分钟且有新消息时触发",
-            "group": "主动回复·触发门控",
-        },
-    )
-
     # 主动回复 - 上下文与窗口
     reply_window_size: int = field(
         default=15,
@@ -847,29 +825,6 @@ class HiddenConfig:
         metadata={
             "description": "跟进聚合窗口(秒)，锚点命中后等待此时间聚合多条消息再触发评估",
             "group": "主动回复·上下文",
-        },
-    )
-
-    # 主动回复 - 频率提升
-    reply_boost_factor: float = field(
-        default=0.6,
-        metadata={
-            "description": "提升系数(<1.0)，回复后触发阈值临时乘以此值，越低越容易再次触发",
-            "group": "主动回复·频率提升",
-        },
-    )
-    reply_boost_duration: int = field(
-        default=15,
-        metadata={
-            "description": "提升持续时间(分钟)，回复后 boost 效果的持续时长，之后线性衰减",
-            "group": "主动回复·频率提升",
-        },
-    )
-    reply_max_boosted_replies: int = field(
-        default=5,
-        metadata={
-            "description": "最大连续 boost 次数，连续回复不超过此次数时享受完整 boost，超出后逐渐减弱",
-            "group": "主动回复·频率提升",
         },
     )
 

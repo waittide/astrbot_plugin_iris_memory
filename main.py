@@ -75,7 +75,6 @@ from .iris_memory.proactive.api import (
 )
 from .iris_memory.proactive.config import ConfigManager as ReplyConfigManager
 from .iris_memory.proactive.decision import (
-    INPUT_SAFETY_COOLDOWN_MINUTES,
     DecisionCore,
     DecisionRequest,
     SafetyCleanupResult,
@@ -642,15 +641,6 @@ class IrisMemoryPlugin(Star):
         await self._state.save_dirty(self._kv_save)
         event.set_result(msg)
 
-    @iris_reply_group.command("cooldown")
-    async def cmd_cooldown(self, event, minutes: int = 5) -> None:
-        group_id = self._get_group_id(event)
-        if not group_id:
-            return
-        msg = self._admin.set_cooldown(group_id, minutes)
-        await self._state.save_dirty(self._kv_save)
-        event.set_result(msg)
-
     @iris_reply_group.command("willingness")
     async def cmd_willingness(self, event, level: str = "") -> None:
         group_id = self._get_group_id(event)
@@ -727,7 +717,6 @@ class IrisMemoryPlugin(Star):
 
         if event.is_at_or_wake_command:
             self._release_decision_ticket(group_id)
-            self._state.increment_msg_count(group_id)
             self._passive_active[group_id] = time.time()
             event.set_extra("iris_mode", "passive")
             return
@@ -761,10 +750,6 @@ class IrisMemoryPlugin(Star):
             if not pending_reply and not self._state.get_anchor(group_id).active:
                 return
 
-        if not self._state.can_detect(group_id, follow_up=is_follow_up):
-            logger.debug(f"Iris Reply: trigger rate-limited for group {group_id}")
-            return
-
         provider_id = self._reply_config.provider_id
         if not provider_id:
             provider_id = await self._get_provider_id(event)
@@ -785,7 +770,6 @@ class IrisMemoryPlugin(Star):
                     f"event={event_id}"
                 )
                 return
-            self._state.record_detect_time(group_id)
             self._triggering[group_id] = time.time()
 
         event.set_extra("iris_decision", {
@@ -941,10 +925,9 @@ class IrisMemoryPlugin(Star):
 
         if outcome.error or outcome.decision is None:
             if outcome.error_kind == "input_content_safety_1026":
-                cleanup, cooldown = await self._clear_rejected_reply_context(
+                cleanup = await self._clear_rejected_reply_context(
                     group_id,
                     outcome.dynamic_context_sources,
-                    record_skip=True,
                 )
                 logger.error(
                     "Iris Reply: decision input rejected by provider safety filter "
@@ -952,14 +935,11 @@ class IrisMemoryPlugin(Star):
                     f"dynamic_sources={cleanup.dynamic_source_count}, "
                     f"window_removed={cleanup.window_removed}, "
                     f"observation_cleared={cleanup.observation_cleared}, "
-                    f"anchor_cleared={cleanup.anchor_cleared}, "
-                    f"cooldown={cooldown}min): "
+                    f"anchor_cleared={cleanup.anchor_cleared}): "
                     f"{outcome.error}"
                 )
             else:
                 logger.error(f"Iris Reply: decision LLM call failed for group {group_id}: {outcome.error}")
-                async with self._state.get_lock(group_id):
-                    self._state.record_skip_reply(group_id)
                 await self._state.save_dirty(self._kv_save)
             self._stats.record_decision_error(group_id, motive)
             self._release_decision_ticket(group_id, ticket_id)
@@ -991,8 +971,6 @@ class IrisMemoryPlugin(Star):
 
         if decision.parse_failed:
             logger.warning(f"Iris Reply: decision parse failed for group {group_id}")
-            async with self._state.get_lock(group_id):
-                self._state.record_skip_reply(group_id)
             await self._state.save_dirty(self._kv_save)
             self._release_decision_ticket(group_id, ticket_id)
             event.stop_event()
@@ -1000,19 +978,7 @@ class IrisMemoryPlugin(Star):
 
         if group_id in self._passive_active:
             logger.info(f"Iris Reply: aborting {motive} for group {group_id}, passive reply in progress")
-            async with self._state.get_lock(group_id):
-                self._state.record_skip_reply(group_id)
             await self._state.save_dirty(self._kv_save)
-            self._release_decision_ticket(group_id, ticket_id)
-            event.stop_event()
-            return True
-
-        if decision.cooldown_minutes:
-            async with self._state.get_lock(group_id):
-                actual = self._state.set_cooldown(group_id, decision.cooldown_minutes)
-                self._state.record_skip_reply(group_id)
-            await self._state.save_dirty(self._kv_save)
-            logger.info(f"Iris Reply: decision requested cooldown {actual} min for group {group_id}")
             self._release_decision_ticket(group_id, ticket_id)
             event.stop_event()
             return True
@@ -1046,8 +1012,6 @@ class IrisMemoryPlugin(Star):
             )
 
         if not decision.should_speak:
-            async with self._state.get_lock(group_id):
-                self._state.record_skip_reply(group_id)
             await self._state.save_dirty(self._kv_save)
             logger.debug(f"Iris Reply: decision skip for group {group_id}")
             self._release_decision_ticket(group_id, ticket_id)
@@ -1072,23 +1036,15 @@ class IrisMemoryPlugin(Star):
         self,
         group_id: str,
         dynamic_context_sources: list[dict[str, Any]] | None,
-        *,
-        record_skip: bool,
-    ) -> tuple[SafetyCleanupResult, int]:
+    ) -> SafetyCleanupResult:
         """隔离一次被 Provider 安全过滤拒绝的主动回复动态上下文。"""
         async with self._state.get_lock(group_id):
             cleanup = self._decision_core.clear_rejected_dynamic_context(
                 group_id,
                 dynamic_context_sources,
             )
-            if record_skip:
-                self._state.record_skip_reply(group_id)
-            cooldown = self._state.set_cooldown(
-                group_id,
-                INPUT_SAFETY_COOLDOWN_MINUTES,
-            )
         await self._state.save_dirty(self._kv_save)
-        return cleanup, cooldown
+        return cleanup
 
     @filter.on_llm_response()
     async def on_llm_response(self, event: AstrMessageEvent, resp: LLMResponse) -> None:
@@ -1143,9 +1099,6 @@ class IrisMemoryPlugin(Star):
             self._reply_in_progress.pop(group_id, None)
             self._passive_active.pop(group_id, None)
 
-            async with self._state.get_lock(group_id):
-                self._state.record_actual_reply(group_id)
-
             self._tool_ctx.clear_context()
             await self._state.save_dirty(self._kv_save)
             try:
@@ -1165,19 +1118,14 @@ class IrisMemoryPlugin(Star):
         elif mode == "passive":
             self._passive_active.pop(group_id, None)
 
-            async with self._state.get_lock(group_id):
-                self._state.record_actual_reply(group_id, count_consecutive=False)
-
             self._stats.record_passive_reply(group_id)
             await self._state.save_dirty(self._kv_save)
             logger.info(f"Iris Reply: passive reply boost applied for group {group_id}")
         else:
             if not self._state.is_whitelisted(group_id):
                 return
-            async with self._state.get_lock(group_id):
-                self._state.record_actual_reply(group_id, count_consecutive=False)
             await self._state.save_dirty(self._kv_save)
-            logger.info(f"Iris Reply: normal LLM reply for group {group_id}, boost applied")
+            logger.info(f"Iris Reply: normal LLM reply for group {group_id}")
 
     @filter.after_message_sent()
     async def on_message_sent(self, event) -> None:
@@ -1295,10 +1243,9 @@ class IrisMemoryPlugin(Star):
 
         if outcome.error or outcome.decision is None:
             if outcome.error_kind == "input_content_safety_1026":
-                cleanup, cooldown = await self._clear_rejected_reply_context(
+                cleanup = await self._clear_rejected_reply_context(
                     group_id,
                     outcome.dynamic_context_sources,
-                    record_skip=False,
                 )
                 logger.warning(
                     "Iris Reply: passive watch input rejected by provider safety filter "
@@ -1306,8 +1253,7 @@ class IrisMemoryPlugin(Star):
                     f"dynamic_sources={cleanup.dynamic_source_count}, "
                     f"window_removed={cleanup.window_removed}, "
                     f"observation_cleared={cleanup.observation_cleared}, "
-                    f"anchor_cleared={cleanup.anchor_cleared}, "
-                    f"cooldown={cooldown}min): "
+                    f"anchor_cleared={cleanup.anchor_cleared}): "
                     f"{outcome.error}"
                 )
                 self._stats.record_decision_error(group_id, "watch")

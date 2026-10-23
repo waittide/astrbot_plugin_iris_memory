@@ -6,13 +6,13 @@ from astrbot.api import logger
 
 from .config import ConfigManager
 from .perception import WindowMessage
-from .state import GroupState, StateManager
+from .state import StateManager
 
 
 class SignalGate:
     """本地信号门控：零 LLM 成本地评估两种唤醒源是否值得进入决策层。
 
-    - 消息唤醒：锚点用户/关键词命中 → follow_up；采样阈值达标 → chime_in
+    - 消息唤醒：每条群消息都进入决策层，锚点命中时标为 follow_up，否则 chime_in
     - 定时器唤醒：冷场静默 / 话题刚结束 → initiate
     """
 
@@ -24,31 +24,27 @@ class SignalGate:
         """消息唤醒门控，返回候选动机 "follow_up" | "chime_in" | None。"""
         if not self._config.enabled:
             return None
-        data = self._state.get_state(group_id)
-        if data.state == GroupState.COOLDOWN:
-            return None
         if self._state.is_muted():
             return None
 
         if sender_id and self._state.match_anchor_user(group_id, sender_id):
             logger.debug("Iris Reply: anchor user trigger for group %s", group_id)
-            self._state.reset_sampling(group_id)
             return "follow_up"
 
         matched = self._state.match_anchor_keyword(group_id, text)
         if matched:
-            logger.debug("Iris Reply: anchor keyword trigger for group %s, keywords=%s", group_id, matched)
-            self._state.reset_sampling(group_id)
+            logger.debug(
+                "Iris Reply: anchor keyword trigger for group %s, keywords=%s",
+                group_id,
+                matched,
+            )
             return "follow_up"
 
-        self._state.increment_msg_count(group_id)
-        if self._state.should_trigger_sampling(group_id):
-            logger.debug("Iris Reply: sampling trigger for group %s", group_id)
-            self._state.reset_sampling(group_id)
-            return "chime_in"
-        return None
+        return "chime_in"
 
-    def evaluate_timer(self, group_id: str, messages: list[WindowMessage]) -> str | None:
+    def evaluate_timer(
+        self, group_id: str, messages: list[WindowMessage]
+    ) -> str | None:
         """定时器唤醒门控，返回 "initiate" | None。
 
         达到最小静默底线后按风险率进行一次独立概率试验；风险率综合静默
@@ -57,8 +53,6 @@ class SignalGate:
         if not self._config.enabled or not self._config.proactive_enabled:
             return None
         data = self._state.get_state(group_id)
-        if data.state == GroupState.COOLDOWN:
-            return None
         if not messages:
             return None
         if data.initiate_pending_since > 0:

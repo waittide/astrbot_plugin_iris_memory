@@ -74,7 +74,9 @@ class AddFollowUpTool(_ProactiveTool):
         if not group_id:
             return "error: no group context"
 
-        uid_list = [u.strip() for u in user_ids.split(",") if u.strip()] if user_ids else None
+        uid_list = (
+            [u.strip() for u in user_ids.split(",") if u.strip()] if user_ids else None
+        )
 
         if not uid_list:
             return "error: must provide at least one user_id"
@@ -84,7 +86,9 @@ class AddFollowUpTool(_ProactiveTool):
 
         async with self._state.get_lock(group_id):
             self._state.add_anchor_watch(group_id, users=uid_list)
-        logger.debug(f"Iris Reply: add_follow_up for group {group_id}, users={uid_list}")
+        logger.debug(
+            f"Iris Reply: add_follow_up for group {group_id}, users={uid_list}"
+        )
         return f"ok: following users={uid_list}"
 
 
@@ -122,49 +126,13 @@ class EndFollowUpTool(_ProactiveTool):
         if not group_id:
             return "error: no group context"
 
-        uid_list = [u.strip() for u in user_ids.split(",") if u.strip()] if user_ids else None
+        uid_list = (
+            [u.strip() for u in user_ids.split(",") if u.strip()] if user_ids else None
+        )
 
         async with self._state.get_lock(group_id):
             self._state.remove_anchor_watch(group_id, user_ids=uid_list)
-        logger.debug(f"Iris Reply: end_follow_up for group {group_id}, users={uid_list}")
-        return f"ok: removed follow-up users={uid_list}"
-
-
-class SetCooldownTool(_ProactiveTool):
-    """设置主动回复冷却时间的 Tool（原 tool_set_cooldown）"""
-
-    def __init__(self, state: StateManager, tool_context: ToolContext) -> None:
-        super().__init__(
-            name="set_cooldown",
-            description=(
-                "当你认为应该暂时停止主动回复时调用此工具。"
-                "设置冷却时间，冷却期间不会主动触发任何回复。"
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "minutes": {
-                        "type": "number",
-                        "description": "冷却时间（分钟），范围 1-120，默认 5",
-                    },
-                },
-            },
-            state=state,
-            tool_context=tool_context,
+        logger.debug(
+            f"Iris Reply: end_follow_up for group {group_id}, users={uid_list}"
         )
-
-    async def call(
-        self,
-        context: ContextWrapper[AstrAgentContext],
-        **kwargs,
-    ) -> ToolExecResult:
-        event = context.context.event
-        minutes = kwargs.get("minutes", 5)
-        group_id = self._get_group_id(event)
-        if not group_id:
-            return "error: no group context"
-
-        async with self._state.get_lock(group_id):
-            actual = self._state.set_cooldown(group_id, minutes)
-        logger.debug(f"Iris Reply: set_cooldown for group {group_id}, {actual} min")
-        return f"ok: cooldown set for {actual} minutes"
+        return f"ok: removed follow-up users={uid_list}"

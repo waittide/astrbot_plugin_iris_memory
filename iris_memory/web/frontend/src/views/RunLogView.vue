@@ -148,7 +148,6 @@ const FIELD_LABELS: Record<string, string> = {
   watch_keywords: '关注关键词',
   watch_reason: '关注原因',
   drifted: '话题漂移',
-  cooldown_minutes: '冷却 (分钟)',
   parse_failed: '解析失败',
   stage: '阶段',
   raw_response: 'LLM 原始响应'

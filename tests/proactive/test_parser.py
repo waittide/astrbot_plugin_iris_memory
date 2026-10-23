@@ -1,10 +1,13 @@
 """proactive.parser 容错解析测试
 
 覆盖：markdown 围栏剥离、Python True/False 字面量、括号配平扫描、
-旧字段名兼容、完全非法输入，以及 action/cooldown 等字段的规范化。
+旧字段名兼容、完全非法输入，以及 action/drifted 等字段的规范化。
 """
 
-from astrbot_plugin_iris_memory.iris_memory.proactive.parser import extract_json, parse_decision
+from astrbot_plugin_iris_memory.iris_memory.proactive.parser import (
+    extract_json,
+    parse_decision,
+)
 
 
 class TestExtractJson:
@@ -48,7 +51,7 @@ class TestParseDecision:
         text = (
             '{"action": "speak", "message": "大家好", "obs": "在聊周末", '
             '"watch": ["u1", "u2"], "watch_keywords": ["周末"], '
-            '"why": "感兴趣", "drifted": false, "cooldown": 0}'
+            '"why": "感兴趣", "drifted": false}'
         )
         d = parse_decision(text, mode="chime_in")
         assert d.should_speak is True
@@ -60,7 +63,6 @@ class TestParseDecision:
         assert d.watch_keywords == ["周末"]
         assert d.why == "感兴趣"
         assert d.drifted is False
-        assert d.cooldown_minutes == 0
         assert d.parse_failed is False
 
     def test_old_field_names_compat(self):
@@ -118,9 +120,7 @@ class TestParseDecision:
         assert d.topic_source == "time_context"
 
     def test_initiate_without_why_now_is_rejected(self):
-        d = parse_decision(
-            '{"action": "speak", "topic": "随便聊聊"}', mode="initiate"
-        )
+        d = parse_decision('{"action": "speak", "topic": "随便聊聊"}', mode="initiate")
         assert d.should_speak is False
 
     def test_initiate_with_unknown_topic_source_is_rejected(self):
@@ -146,12 +146,9 @@ class TestParseDecision:
         assert parse_decision('{"action": "skip"}').should_speak is False
         assert parse_decision('{"action": "no"}').should_speak is False
 
-    def test_cooldown_parsing(self):
-        assert parse_decision('{"cooldown": 10}').cooldown_minutes == 10
-        assert parse_decision('{"cooldown": "15"}').cooldown_minutes == 15
-        assert parse_decision('{"cooldown": -5}').cooldown_minutes == 0
-        assert parse_decision('{"cooldown": 999}').cooldown_minutes == 120
-        assert parse_decision('{"cooldown": "abc"}').cooldown_minutes == 0
+    def test_cooldown_field_removed(self):
+        # 冷却机制已删除，旧 prompt 残留的 cooldown 字段被忽略
+        assert not hasattr(parse_decision('{"cooldown": 10}'), "cooldown_minutes")
 
     def test_watch_list_truncated_to_10(self):
         users = [f"u{i}" for i in range(15)]

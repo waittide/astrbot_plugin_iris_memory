@@ -10,16 +10,12 @@ from astrbot.api.event import MessageChain
 from astrbot.api.star import Context
 
 from .config import ConfigManager
-from .decision import (
-    INPUT_SAFETY_COOLDOWN_MINUTES,
-    DecisionCore,
-    DecisionRequest,
-)
+from .decision import DecisionCore, DecisionRequest
 from .parser import Decision
 from .perception import ContextPackager, SlidingWindow, WindowMessage
 from .prompts import SPEAK_HINTS
 from .signals import SignalGate
-from .state import GroupState, StateManager
+from .state import StateManager
 from .stats import StatsCollector
 from .time_hint import resolve_datetime_reminder, wrap_system_reminder
 from ..llm_modules import PROACTIVE_REPLY_INITIATE
@@ -211,9 +207,6 @@ class ProactiveEngine:
                     not_before=retry_after + random.uniform(30.0, 180.0),
                 )
                 continue
-            if not self._state.can_detect(group_id):
-                self._schedule_group(group_id, now=now)
-                continue
             messages = self._window.get_messages(group_id)
             async with self._state.get_lock(group_id):
                 motive = self._signals.evaluate_timer(group_id, messages)
@@ -264,7 +257,6 @@ class ProactiveEngine:
 
         self._initiating.add(group_id)
         try:
-            self._state.record_detect_time(group_id)
             req = DecisionRequest(
                 group_id=group_id,
                 wake="timer",
@@ -282,22 +274,17 @@ class ProactiveEngine:
                             group_id,
                             outcome.dynamic_context_sources,
                         )
-                        cooldown = self._state.set_cooldown(
-                            group_id,
-                            INPUT_SAFETY_COOLDOWN_MINUTES,
-                        )
                     await self._save_fn()
                     logger.warning(
                         "Iris Reply: initiate input rejected by provider safety filter "
                         "for group %s (1026, retryable=false, dynamic_sources=%d, "
                         "window_removed=%d, observation_cleared=%s, "
-                        "anchor_cleared=%s, cooldown=%dmin)",
+                        "anchor_cleared=%s)",
                         group_id,
                         cleanup.dynamic_source_count,
                         cleanup.window_removed,
                         cleanup.observation_cleared,
                         cleanup.anchor_cleared,
-                        cooldown,
                     )
                 return f"决策调用失败: {outcome.error}"
 
@@ -312,17 +299,14 @@ class ProactiveEngine:
             )
             logger.info(
                 "Iris Reply: initiate decision for group %s: speak=%s, drifted=%s, "
-                "cooldown=%d, source=%s, why_now=%.100s, topic=%.100s",
+                "source=%s, why_now=%.100s, topic=%.100s",
                 group_id, decision.should_speak, decision.drifted,
-                decision.cooldown_minutes, decision.topic_source,
-                decision.why_now, decision.topic,
+                decision.topic_source, decision.why_now, decision.topic,
             )
 
             async with self._state.get_lock(group_id):
                 if decision.observation:
                     self._state.set_observation(group_id, decision.observation)
-                if decision.cooldown_minutes:
-                    self._state.set_cooldown(group_id, decision.cooldown_minutes)
                 if decision.drifted:
                     self._state.close_anchor(group_id)
                     self._state.record_drift(group_id)
@@ -440,8 +424,6 @@ class ProactiveEngine:
             return ""
         if self._state.is_muted():
             return "当前进入静音时段"
-        if data.state == GroupState.COOLDOWN:
-            return "当前处于冷却状态"
         if not messages:
             return "缺少可用群聊上下文"
         quiet = time.time() - max(data.last_human_message_at, messages[-1].timestamp)

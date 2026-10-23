@@ -4,11 +4,6 @@ export interface ReplyWhitelistGroup {
   group_id: string
   state: string
   willingness: string
-  msg_count: number
-  effective_n: number
-  effective_t: number
-  backoff_level: number
-  consecutive_replies: number
   initiate_daily_count: number
   initiate_rolling_24h_count?: number
   initiate_hazard_probability?: number
@@ -36,11 +31,6 @@ export interface ReplyStatsGroup {
   last_reply_time: number
   current_state: string
   willingness: string
-  msg_count: number
-  effective_n: number
-  effective_t: number
-  backoff_level: number
-  consecutive_replies: number
   initiate_daily_count: number
 }
 

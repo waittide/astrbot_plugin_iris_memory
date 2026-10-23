@@ -1,7 +1,7 @@
 """signals.SignalGate 门控矩阵测试
 
-覆盖：停用 / 冷却 / 静音 / 白名单（Gatekeeper 层）/ 锚点用户与关键词命中 /
-采样计数触发 / 采样时间触发，以及 evaluate_timer 的 initiate 门控。
+覆盖：停用 / 静音 / 白名单（Gatekeeper 层）/ 锚点用户与关键词命中 /
+每条消息都进入决策，以及 evaluate_timer 的 initiate 门控。
 """
 
 import time
@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 
 from astrbot_plugin_iris_memory.iris_memory.proactive.perception import Gatekeeper
 from astrbot_plugin_iris_memory.iris_memory.proactive.signals import SignalGate
-from astrbot_plugin_iris_memory.iris_memory.proactive.state import GroupState, StateManager
+from astrbot_plugin_iris_memory.iris_memory.proactive.state import StateManager
 
 GID = "g1"
 
@@ -34,64 +34,28 @@ class TestMessageGateBasic:
         st.add_anchor_watch(GID, users=["u1"])
         assert gate.evaluate_message(GID, "u1", "hi") is None
 
-    def test_cooldown_blocks(self, nm_config):
-        _, st, gate = _build(nm_config)
-        st.set_cooldown(GID, 5)
-        st.add_anchor_watch(GID, users=["u1"])
-        assert gate.evaluate_message(GID, "u1", "hi") is None
-
     def test_muted_blocks(self, nm_config):
         _, st, gate = _build(nm_config)
         st.is_muted = lambda: True
         assert gate.evaluate_message(GID, "u1", "hi") is None
 
-    def test_no_signal_increments_count(self, gate, state):
-        assert gate.evaluate_message(GID, "u1", "今天聊点什么") is None
-        assert state.get_state(GID).msg_count == 1
+    def test_every_message_falls_through_to_chime_in(self, gate):
+        # 无锚点命中时不再采样门控，每条消息都进入决策
+        assert gate.evaluate_message(GID, "u1", "今天聊点什么") == "chime_in"
 
 
 class TestMessageGateAnchor:
     def test_anchor_user_hit_returns_follow_up(self, gate, state):
-        state.increment_msg_count(GID)
         state.add_anchor_watch(GID, users=["u1"])
         assert gate.evaluate_message(GID, "u1", "我回来了") == "follow_up"
-        # 命中后采样计数被重置
-        assert state.get_state(GID).msg_count == 0
 
     def test_anchor_keyword_hit_returns_follow_up(self, gate, state):
         state.add_anchor_watch(GID, keywords=["天气"])
         assert gate.evaluate_message(GID, "u9", "今天天气真不错") == "follow_up"
-        assert state.get_state(GID).msg_count == 0
 
-    def test_anchor_miss_falls_through_to_sampling(self, gate, state):
+    def test_anchor_miss_still_returns_chime_in(self, gate, state):
         state.add_anchor_watch(GID, users=["u1"], keywords=["天气"])
-        assert gate.evaluate_message(GID, "u9", "完全无关的内容") is None
-        assert state.get_state(GID).msg_count == 1
-
-
-class TestMessageGateSampling:
-    def test_count_trigger(self, nm_config):
-        # effective_n = max(5, int(5 * 0.85)) = 5（medium 意愿）
-        _, st, gate = _build(nm_config, overrides={"default_n": 5})
-        for i in range(4):
-            assert gate.evaluate_message(GID, "u1", f"消息{i}") is None
-        assert gate.evaluate_message(GID, "u1", "第五条") == "chime_in"
-        # 触发后采样重置
-        data = st.get_state(GID)
-        assert data.msg_count == 0
-        assert time.time() - data.last_sample_time < 5
-
-    def test_time_trigger(self, gate, state):
-        # effective_t = max(5, int(30 * 0.85)) = 25 分钟
-        data = state.get_state(GID)
-        data.last_sample_time = time.time() - 26 * 60
-        assert gate.evaluate_message(GID, "u1", "一条新消息") == "chime_in"
-
-    def test_time_trigger_requires_pending_messages(self, gate, state):
-        # msg_count == 0 时即使超时也不触发
-        data = state.get_state(GID)
-        data.last_sample_time = time.time() - 26 * 60
-        assert state.should_trigger_sampling(GID) is False
+        assert gate.evaluate_message(GID, "u9", "完全无关的内容") == "chime_in"
 
 
 class TestTimerGate:
@@ -115,14 +79,20 @@ class TestTimerGate:
         _, st, gate = self._timer_gate(nm_config)
         old = make_msg(timestamp=time.time() - 1900)
         self._prime_hazard(st)
-        with patch("astrbot_plugin_iris_memory.iris_memory.proactive.state.random.random", return_value=0.0):
+        with patch(
+            "astrbot_plugin_iris_memory.iris_memory.proactive.state.random.random",
+            return_value=0.0,
+        ):
             assert gate.evaluate_timer(GID, [old]) == "initiate"
 
     def test_same_eligible_state_can_probabilistically_skip(self, nm_config, make_msg):
         _, st, gate = self._timer_gate(nm_config)
         old = make_msg(timestamp=time.time() - 1900)
         self._prime_hazard(st)
-        with patch("astrbot_plugin_iris_memory.iris_memory.proactive.state.random.random", return_value=1.0):
+        with patch(
+            "astrbot_plugin_iris_memory.iris_memory.proactive.state.random.random",
+            return_value=1.0,
+        ):
             assert gate.evaluate_timer(GID, [old]) is None
 
     def test_hard_quiet_floor_blocks(self, nm_config, make_msg):
@@ -178,28 +148,30 @@ class TestTimerGate:
         # 超过最小间隔后放行
         st.get_state(GID).last_initiate_time = time.time() - 3700
         self._prime_hazard(st)
-        with patch("astrbot_plugin_iris_memory.iris_memory.proactive.state.random.random", return_value=0.0):
+        with patch(
+            "astrbot_plugin_iris_memory.iris_memory.proactive.state.random.random",
+            return_value=0.0,
+        ):
             assert gate.evaluate_timer(GID, [old]) == "initiate"
 
     def test_drift_increases_hazard(self, nm_config, make_msg):
         _, st, gate = self._timer_gate(nm_config, {"proactive_drift_delay": 5})
         quiet = make_msg(timestamp=time.time() - 1900)
         self._prime_hazard(st)
-        with patch("astrbot_plugin_iris_memory.iris_memory.proactive.state.random.random", return_value=1.0):
+        with patch(
+            "astrbot_plugin_iris_memory.iris_memory.proactive.state.random.random",
+            return_value=1.0,
+        ):
             gate.evaluate_timer(GID, [quiet])
         base = st.get_state(GID).initiate_hazard_probability
         st.get_state(GID).last_drift_time = time.time() - 100
         self._prime_hazard(st)
-        with patch("astrbot_plugin_iris_memory.iris_memory.proactive.state.random.random", return_value=1.0):
+        with patch(
+            "astrbot_plugin_iris_memory.iris_memory.proactive.state.random.random",
+            return_value=1.0,
+        ):
             gate.evaluate_timer(GID, [quiet])
         assert st.get_state(GID).initiate_hazard_probability > base
-
-    def test_cooldown_blocks_timer(self, nm_config, make_msg):
-        _, st, gate = self._timer_gate(nm_config)
-        st.set_cooldown(GID, 5)
-        old = make_msg(timestamp=time.time() - 1900)
-        self._prime_hazard(st)
-        assert gate.evaluate_timer(GID, [old]) is None
 
     def test_muted_freezes_hazard(self, nm_config, make_msg):
         _, st, gate = self._timer_gate(nm_config)
@@ -240,6 +212,8 @@ class TestGatekeeperWhitelist:
         gk = Gatekeeper(cm, st)
         assert gk.should_process(_event()) is False
 
-    def test_state_enum_values(self):
-        assert GroupState.IDLE.value == "idle"
-        assert GroupState.COOLDOWN.value == "cooldown"
+    def test_state_enum_removed(self):
+        # 冷却状态机已删除，StateManager 不再暴露 GroupState
+        from astrbot_plugin_iris_memory.iris_memory.proactive import state as state_mod
+
+        assert not hasattr(state_mod, "GroupState")

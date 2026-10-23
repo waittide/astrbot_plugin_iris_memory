@@ -16,19 +16,13 @@ _DEFAULTS = {
         "end_minute": 0,
     },
     "window_size": 15,
-    "default_n": 15,
-    "default_t": 30,
     "max_token": 3000,
     "follow_up_ttl": 10,
     "follow_up_aggregate_window": 6,
     "quality_threshold": 0.2,
     "provider_id": "",
-    "trigger_min_interval": 30,
     "passive_watch_min_interval": 600,
     "passive_watch_enabled": False,
-    "boost_factor": 0.6,
-    "boost_duration": 15,
-    "max_boosted_replies": 5,
     "proactive_enabled": False,
     "proactive_check_interval": 5,
     "proactive_quiet_minutes": 120,
@@ -50,18 +44,12 @@ _SCHEMA_KEYS = {"enabled", "proactive_enabled", "stats_enabled", "provider_id"}
 # mute_period 拆为四个独立整数键。
 _HIDDEN_KEY_MAP = {
     "window_size": "reply_window_size",
-    "default_n": "reply_default_n",
-    "default_t": "reply_default_t",
     "max_token": "reply_max_token",
     "follow_up_ttl": "reply_follow_up_ttl",
     "follow_up_aggregate_window": "reply_follow_up_aggregate_window",
     "quality_threshold": "reply_quality_threshold",
-    "trigger_min_interval": "reply_trigger_min_interval",
     "passive_watch_min_interval": "reply_passive_watch_min_interval",
     "passive_watch_enabled": "reply_passive_watch_enabled",
-    "boost_factor": "reply_boost_factor",
-    "boost_duration": "reply_boost_duration",
-    "max_boosted_replies": "reply_max_boosted_replies",
     "proactive_check_interval": "proactive_check_interval",
     "proactive_quiet_minutes": "proactive_quiet_minutes",
     "proactive_max_per_day": "proactive_max_per_day",
@@ -221,14 +209,6 @@ class ConfigManager:
         return max(5, min(30, int(self._get("window_size"))))
 
     @property
-    def default_n(self) -> int:
-        return max(5, min(120, int(self._get("default_n"))))
-
-    @property
-    def default_t(self) -> int:
-        return max(5, min(180, int(self._get("default_t"))))
-
-    @property
     def max_token(self) -> int:
         return max(1000, min(8000, int(self._get("max_token"))))
 
@@ -249,28 +229,12 @@ class ConfigManager:
         return str(self._get("provider_id", ""))
 
     @property
-    def trigger_min_interval(self) -> int:
-        return max(10, min(120, int(self._get("trigger_min_interval"))))
-
-    @property
     def passive_watch_min_interval(self) -> int:
         return max(60, min(3600, int(self._get("passive_watch_min_interval"))))
 
     @property
     def passive_watch_enabled(self) -> bool:
         return bool(self._get("passive_watch_enabled"))
-
-    @property
-    def boost_factor(self) -> float:
-        return max(0.3, min(0.95, float(self._get("boost_factor"))))
-
-    @property
-    def boost_duration(self) -> int:
-        return max(1, min(60, int(self._get("boost_duration"))))
-
-    @property
-    def max_boosted_replies(self) -> int:
-        return max(2, min(10, int(self._get("max_boosted_replies"))))
 
     @property
     def proactive_enabled(self) -> bool:

@@ -17,15 +17,9 @@ KvSaveFn = Callable[[str, Any], Awaitable[None]]
 def group_state_summary(state: StateManager, group_id: str) -> dict:
     """构建群状态摘要字典（stats 同步与白名单列表共用）。"""
     data = state.get_state(group_id)
-    effective_n, effective_t = state.get_effective_thresholds(group_id)
     return {
-        "state": data.state.value,
+        "state": "idle",
         "willingness": data.willingness,
-        "msg_count": data.msg_count,
-        "effective_n": effective_n,
-        "effective_t": effective_t,
-        "backoff_level": data.backoff_level,
-        "consecutive_replies": data.consecutive_replies,
         "initiate_daily_count": data.initiate_daily_count,
         "initiate_rolling_24h_count": data.initiate_daily_count,
         "initiate_hazard_probability": data.initiate_hazard_probability,

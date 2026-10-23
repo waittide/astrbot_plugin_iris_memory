@@ -1,6 +1,6 @@
 """LLM Tool 统一注册入口
 
-全部 9 个工具（记忆侧 6 个 + 主动回复侧 3 个）由 build_llm_tools()
+全部 8 个工具（记忆侧 6 个 + 主动回复侧 2 个）由 build_llm_tools()
 构建、_validate_tools() 校验、register_llm_tools() 注册并统一修正
 插件归属（handler_module_path）。
 
@@ -20,7 +20,7 @@ from ..proactive.tools import ToolContext
 
 from .correct_memory import CorrectMemoryTool
 from .get_profile import GetProfileTool
-from .proactive import AddFollowUpTool, EndFollowUpTool, SetCooldownTool
+from .proactive import AddFollowUpTool, EndFollowUpTool
 from .save_knowledge import SaveKnowledgeTool
 from .save_memory import SaveMemoryTool
 from .search_knowledge_graph import SearchKnowledgeGraphTool
@@ -38,7 +38,6 @@ EXPECTED_TOOL_NAMES = frozenset(
         "get_profile",
         "add_follow_up",
         "end_follow_up",
-        "set_cooldown",
     }
 )
 
@@ -58,7 +57,6 @@ def build_llm_tools(
         GetProfileTool(),
         AddFollowUpTool(state, tool_context),
         EndFollowUpTool(state, tool_context),
-        SetCooldownTool(state, tool_context),
     ]
     _validate_tools(tools)
     return tools
@@ -109,9 +107,7 @@ def register_llm_tools(
     for tool in tools:
         tool.handler_module_path = owner_module
 
-    invalid = [
-        tool.name for tool in tools if tool.handler_module_path != owner_module
-    ]
+    invalid = [tool.name for tool in tools if tool.handler_module_path != owner_module]
     if invalid:
         raise RuntimeError(f"LLM Tool 归属写入失败: {invalid}")
 

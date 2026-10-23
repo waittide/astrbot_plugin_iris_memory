@@ -25,7 +25,6 @@ class Decision:
     watch_keywords: list[str] = field(default_factory=list)
     why: str = ""
     drifted: bool = False
-    cooldown_minutes: int = 0
     parse_failed: bool = False
 
     @property
@@ -112,16 +111,6 @@ def _parse_action(raw: Any, fallback_reply: Any) -> str:
     return "speak" if parse_bool(fallback_reply) else "none"
 
 
-def _parse_cooldown(raw: Any) -> int:
-    try:
-        minutes = int(float(raw))
-    except (TypeError, ValueError):
-        return 0
-    if minutes <= 0:
-        return 0
-    return min(minutes, 120)
-
-
 def parse_decision(text: str, mode: str = "") -> Decision:
     """解析 LLM 统一决策输出，兼容多种字段命名。"""
     obj = extract_json(text)
@@ -142,7 +131,6 @@ def parse_decision(text: str, mode: str = "") -> Decision:
     )
     why = str(obj.get("why", obj.get("interest_reason", "")))
     drifted = parse_bool(obj.get("drifted", obj.get("topic_drifted", False)))
-    cooldown = _parse_cooldown(obj.get("cooldown", 0))
 
     # 防御：不要求发言时忽略 message/topic；drifted 时不应发言
     if action != "speak":
@@ -157,8 +145,10 @@ def parse_decision(text: str, mode: str = "") -> Decision:
         why_now = ""
         topic_source = ""
     # 主动开题必须说明“为什么是现在”以及依据来源；缺少现场理由时宁可不说。
-    if mode == "initiate" and action == "speak" and not (
-        topic and why_now and topic_source in _INITIATE_TOPIC_SOURCES
+    if (
+        mode == "initiate"
+        and action == "speak"
+        and not (topic and why_now and topic_source in _INITIATE_TOPIC_SOURCES)
     ):
         action = "none"
         message = ""
@@ -178,5 +168,4 @@ def parse_decision(text: str, mode: str = "") -> Decision:
         watch_keywords=watch_keywords,
         why=why,
         drifted=drifted,
-        cooldown_minutes=cooldown,
     )

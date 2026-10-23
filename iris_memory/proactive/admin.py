@@ -15,10 +15,6 @@ class AdminCommands:
         self._state.reset_group(group_id)
         return f"群 {group_id} 状态已重置"
 
-    def set_cooldown(self, group_id: str, minutes: int) -> str:
-        actual = self._state.set_cooldown(group_id, minutes)
-        return f"群 {group_id} 冷却已设置为 {actual} 分钟"
-
     def set_willingness(self, group_id: str, raw_level: str) -> str:
         level = resolve_level(raw_level)
         if not level:

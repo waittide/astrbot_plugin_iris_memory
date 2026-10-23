@@ -31,8 +31,6 @@ _INPUT_SENSITIVE_1026 = re.compile(
     re.IGNORECASE,
 )
 
-INPUT_SAFETY_COOLDOWN_MINUTES = 30
-
 
 def _redact_dynamic_context_sources(
     sources: list[dict[str, Any]] | None,
@@ -101,12 +99,10 @@ def _record_decision_log(
 
         d = outcome.decision
         # 标签优先级与 main.py _handle_reply_decision 的实际消费顺序保持一致：
-        # parse_failed → cooldown（命中即跳过）→ drifted → should_speak → skip，
-        # 避免 cooldown 与 speak 同现时日志误标「决定发言」。
+        # parse_failed → drifted → should_speak → skip，
+        # 避免 drifted 与 speak 同现时日志误标「决定发言」。
         if d.parse_failed:
             result_label = "解析失败"
-        elif d.cooldown_minutes:
-            result_label = f"请求冷却 {d.cooldown_minutes} 分钟"
         elif d.drifted:
             result_label = "话题漂移"
         elif d.should_speak:
@@ -134,7 +130,6 @@ def _record_decision_log(
             watch_keywords=d.watch_keywords,
             watch_reason=d.why,
             drifted=d.drifted,
-            cooldown_minutes=d.cooldown_minutes,
             parse_failed=d.parse_failed,
             system_prompt=outcome.system_prompt,
             user_prompt=outcome.user_prompt,
@@ -237,7 +232,9 @@ class DecisionCore:
         if observation:
             user_prompt += f"\n\n<recent_observation>之前的观察：{observation}</recent_observation>"
 
-        user_prompt += build_anchor_block(self._state.get_anchor(req.group_id), req.motive)
+        user_prompt += build_anchor_block(
+            self._state.get_anchor(req.group_id), req.motive
+        )
 
         instruction = MOTIVE_INSTRUCTIONS[req.motive]
         if req.motive == "initiate":
@@ -249,7 +246,9 @@ class DecisionCore:
         user_prompt += f"\n\n<instruction>{instruction}</instruction>"
 
         messages = self._window.get_messages(req.group_id)
-        user_prompt += "\n\n" + self._packager.package(req.group_id, messages, req.motive)
+        user_prompt += "\n\n" + self._packager.package(
+            req.group_id, messages, req.motive
+        )
 
         system_prompt = prompts["decision_system"]
         time_hint = wrap_system_reminder(
@@ -259,7 +258,9 @@ class DecisionCore:
             system_prompt = f"{time_hint}\n\n{system_prompt}"
         return user_prompt, system_prompt
 
-    def collect_dynamic_context_sources(self, req: DecisionRequest) -> list[dict[str, Any]]:
+    def collect_dynamic_context_sources(
+        self, req: DecisionRequest
+    ) -> list[dict[str, Any]]:
         """返回决策 prompt 中所有动态内容的来源，供安全拦截定位。"""
         sources: list[dict[str, Any]] = []
 
@@ -269,7 +270,9 @@ class DecisionCore:
 
         anchor = self._state.get_anchor(req.group_id)
         if anchor.bot_message:
-            sources.append({"source": "thread.bot_message", "content": anchor.bot_message})
+            sources.append(
+                {"source": "thread.bot_message", "content": anchor.bot_message}
+            )
         if anchor.participants:
             sources.append(
                 {

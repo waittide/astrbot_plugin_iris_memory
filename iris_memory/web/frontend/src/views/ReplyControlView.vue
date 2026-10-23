@@ -76,12 +76,7 @@
                 <thead>
                   <tr>
                     <th>群ID</th>
-                    <th>状态机</th>
                     <th>意愿</th>
-                    <th>消息</th>
-                    <th>阈值 N/T</th>
-                    <th>退避</th>
-                    <th>连续</th>
                     <th>锚点</th>
                     <th>滚动24h发起</th>
                     <th>操作</th>
@@ -90,15 +85,6 @@
                 <tbody>
                   <tr v-for="g in whitelist" :key="g.group_id">
                     <td class="font-weight-medium">{{ g.group_id }}</td>
-                    <td>
-                      <v-chip
-                        size="x-small"
-                        variant="tonal"
-                        :color="stateChip(g.state).color"
-                      >
-                        {{ stateChip(g.state).text }}
-                      </v-chip>
-                    </td>
                     <td>
                       <v-select
                         :model-value="g.willingness"
@@ -110,10 +96,6 @@
                         @update:model-value="(v: string) => handleSetWillingness(g.group_id, v)"
                       />
                     </td>
-                    <td>{{ g.msg_count }}</td>
-                    <td>{{ g.effective_n }}/{{ g.effective_t }}m</td>
-                    <td>{{ g.backoff_level }}</td>
-                    <td>{{ g.consecutive_replies }}</td>
                     <td style="max-width: 260px">
                       <div v-if="g.anchor_kind" class="d-flex flex-wrap ga-1 align-center">
                         <v-chip size="x-small" variant="tonal" color="info">{{ g.anchor_kind }}</v-chip>
@@ -237,10 +219,6 @@
                       <th>偏移</th>
                       <th>发起</th>
                       <th>被动</th>
-                      <th>消息</th>
-                      <th>阈值 N/T</th>
-                      <th>退避</th>
-                      <th>连续</th>
                       <th>最近决策</th>
                     </tr>
                   </thead>
@@ -262,10 +240,6 @@
                       <td>{{ g.total_drifts }}</td>
                       <td>{{ g.total_initiates }}</td>
                       <td>{{ g.total_passive_replies }}</td>
-                      <td>{{ g.msg_count }}</td>
-                      <td>{{ g.effective_n }}/{{ g.effective_t }}m</td>
-                      <td>{{ g.backoff_level }}</td>
-                      <td>{{ g.consecutive_replies }}</td>
                       <td class="text-medium-emphasis">{{ formatTime(g.last_decision_time) }}</td>
                     </tr>
                   </tbody>
@@ -438,7 +412,6 @@ const filteredStatsGroups = computed(() => {
 const stateChip = (state: string): { text: string; color: string } => {
   const map: Record<string, { text: string; color: string }> = {
     idle: { text: '空闲', color: 'grey' },
-    cooldown: { text: '冷却', color: 'warning' },
     following: { text: '跟进', color: 'info' }
   }
   return map[state] || { text: state, color: 'grey' }

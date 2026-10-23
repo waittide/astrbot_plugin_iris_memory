@@ -1,4 +1,4 @@
-"""主动回复工具行为测试：add_follow_up / end_follow_up / set_cooldown。
+"""主动回复工具行为测试：add_follow_up / end_follow_up。
 
 通过真实 ContextWrapper 调用 call()，与 6 个记忆工具的执行路径一致。
 """
@@ -12,7 +12,10 @@ from astrbot.core.agent.run_context import ContextWrapper
 from astrbot_plugin_iris_memory.iris_memory.proactive.config import ConfigManager
 from astrbot_plugin_iris_memory.iris_memory.proactive.state import StateManager
 from astrbot_plugin_iris_memory.iris_memory.proactive.tools import ToolContext
-from astrbot_plugin_iris_memory.iris_memory.tools import AddFollowUpTool, EndFollowUpTool, SetCooldownTool
+from astrbot_plugin_iris_memory.iris_memory.tools import (
+    AddFollowUpTool,
+    EndFollowUpTool,
+)
 
 
 @pytest.fixture
@@ -108,37 +111,6 @@ async def test_end_follow_up_empty_removes_all(state, tool_context):
     result = await end_tool.call(make_run_context(), user_ids="")
     assert result == "ok: removed follow-up users=None"
     assert not state.get_anchor("event_group").participants
-
-
-# ── set_cooldown ──
-
-
-@pytest.mark.asyncio
-async def test_set_cooldown_without_group_context(state, tool_context):
-    tool = SetCooldownTool(state, tool_context)
-    result = await tool.call(make_run_context(group_id=""), minutes=5)
-    assert result == "error: no group context"
-
-
-@pytest.mark.asyncio
-async def test_set_cooldown_returns_actual_minutes(state, tool_context):
-    tool = SetCooldownTool(state, tool_context)
-    result = await tool.call(make_run_context(), minutes=10)
-    assert result == "ok: cooldown set for 10 minutes"
-
-
-@pytest.mark.asyncio
-async def test_set_cooldown_default_minutes(state, tool_context):
-    tool = SetCooldownTool(state, tool_context)
-    result = await tool.call(make_run_context())
-    assert result == "ok: cooldown set for 5 minutes"
-
-
-@pytest.mark.asyncio
-async def test_set_cooldown_clamped_by_state_manager(state, tool_context):
-    tool = SetCooldownTool(state, tool_context)
-    result = await tool.call(make_run_context(), minutes=999)
-    assert result == "ok: cooldown set for 120 minutes"
 
 
 # ── ToolContext 群 ID 优先级 ──
