@@ -778,9 +778,9 @@ class HiddenConfig:
         },
     )
     reply_max_concurrency: int = field(
-        default=4,
+        default=1,
         metadata={
-            "description": "主动回复并发上限(1-16)，同群可同时进行多个决策与回复",
+            "description": "主动回复并发上限(1-16)，1 为串行，>1 允许多条决策/回复同时进行",
             "group": "主动回复·触发门控",
         },
     )

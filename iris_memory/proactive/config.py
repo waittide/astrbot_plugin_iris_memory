@@ -22,7 +22,7 @@ _DEFAULTS = {
     "quality_threshold": 0.2,
     "provider_id": "",
     "passive_watch_min_interval": 600,
-    "reply_max_concurrency": 4,
+    "reply_max_concurrency": 1,
     "passive_watch_enabled": False,
     "proactive_enabled": False,
     "proactive_check_interval": 5,

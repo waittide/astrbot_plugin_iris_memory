@@ -30,7 +30,9 @@ class DecisionPermitLimiter:
     - 持有者必须在决策结束时 ``release``，或由 ``cleanup`` 兜底回收
     """
 
-    def __init__(self, max_concurrency: int = 4, timeout_seconds: float = 120.0) -> None:
+    def __init__(
+        self, max_concurrency: int = 1, timeout_seconds: float = 120.0
+    ) -> None:
         self._max = max(1, int(max_concurrency))
         self._timeout = max(1.0, float(timeout_seconds))
         self._active: dict[str, DecisionPermit] = {}

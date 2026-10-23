@@ -92,3 +92,13 @@ def test_expired_permits_are_reclaimable():
     expired = limiter.cleanup(now=106.0)
     assert [p.permit_id for p in expired] == [permit.permit_id]
     assert limiter.claim(GID, "event-2", now=107.0) is not None
+
+
+def test_default_limit_is_serial(make_config):
+    """默认并发为 1：不显式配置时同群仍保持串行。"""
+    assert make_config().reply_max_concurrency == 1
+
+    limiter = DecisionPermitLimiter()
+    assert limiter.max_concurrency == 1
+    assert limiter.claim(GID, "event-1") is not None
+    assert limiter.claim("g2", "event-2") is None
