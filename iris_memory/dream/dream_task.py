@@ -51,8 +51,6 @@ class DreamPhaseReport:
     llm_calls: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
-    embedding_requests: int = 0
-    embedded_texts: int = 0
 
 
 @dataclass
@@ -71,8 +69,6 @@ class DreamReport:
             "llm_calls": sum(p.llm_calls for p in self.phases),
             "input_tokens": sum(p.input_tokens for p in self.phases),
             "output_tokens": sum(p.output_tokens for p in self.phases),
-            "embedding_requests": sum(p.embedding_requests for p in self.phases),
-            "embedded_texts": sum(p.embedded_texts for p in self.phases),
         }
 
     @property
@@ -89,7 +85,7 @@ class DreamReport:
         cost = self.cost
         return (
             f"梦境完成：{', '.join(parts)}，耗时 {self.total_duration_ms}ms，"
-            f"LLM {cost['llm_calls']} 次，Embedding {cost['embedding_requests']} 次"
+            f"LLM {cost['llm_calls']} 次"
             + (f"，预算已耗尽({self.budget_reason})" if self.budget_exhausted else "")
         )
 
@@ -450,15 +446,10 @@ class DreamTask:
             if llm and hasattr(llm, "get_token_stats")
             else {}
         )
-        embedding_stats = (
-            l2.get_embedding_stats() if hasattr(l2, "get_embedding_stats") else {}
-        )
         return {
             "llm_calls": int(llm_stats.get("total_calls", 0)),
             "input_tokens": int(llm_stats.get("total_input_tokens", 0)),
             "output_tokens": int(llm_stats.get("total_output_tokens", 0)),
-            "embedding_requests": int(embedding_stats.get("requests", 0)),
-            "embedded_texts": int(embedding_stats.get("texts", 0)),
         }
 
     @staticmethod

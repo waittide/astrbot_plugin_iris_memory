@@ -99,9 +99,6 @@ logger = get_logger("main")
 
 PLUGIN_NAME = "astrbot_plugin_iris_memory"
 
-# 旧版（v2.x）数据自动迁移开关；v4 删除本常量与 iris_memory/legacy_migration/ 即彻底移除
-LEGACY_MIGRATION_ENABLED = True
-
 _IRIS_ACTIVE_TIMEOUT = 120
 _UMO_KV_KEY = "iris_reply:group_umo"
 
@@ -224,7 +221,6 @@ class IrisMemoryPlugin(Star):
                 llm_manager=self._llm_manager,
                 packager=self._context_packager,
                 umo_get=lambda gid: self._group_umo.get(gid),
-                is_busy=self._is_busy,
                 gate=self._gate,
                 self_id_get=lambda: self._self_id,
                 save_fn=lambda: self._state.save_dirty(self._kv_save),
@@ -384,18 +380,7 @@ class IrisMemoryPlugin(Star):
         except Exception as e:
             logger.error(f"记忆组件初始化失败：{e}", exc_info=True)
 
-        # 2. 旧版（v2.x）数据自动迁移（独立模块，失败不阻断启动）
-        if LEGACY_MIGRATION_ENABLED:
-            try:
-                from .iris_memory.legacy_migration import migrate_if_needed
-
-                await migrate_if_needed(
-                    self.context, self, StarTools.get_data_dir(), self.component_manager
-                )
-            except Exception:
-                logger.error("旧数据迁移失败（不影响插件启动）", exc_info=True)
-
-        # 3. 主动回复侧初始化
+        # 2. 主动回复侧初始化
         await self._state.load_all(self._kv_load)
         umo_data = await self._kv_load(_UMO_KV_KEY)
         if isinstance(umo_data, dict):
@@ -845,130 +830,130 @@ class IrisMemoryPlugin(Star):
             return True
 
         event.set_extra("iris_round_owned", True)
-
-        # 这条消息已被上一轮回复的决策上下文覆盖，不再重复决策
-        if self._gate.covered(group_id, message_at):
-            logger.debug(
-                "Iris Reply: message already covered by previous round for group %s",
-                group_id,
-            )
-            await self._release_gate(group_id, "covered")
-            event.stop_event()
-            return True
-
-        if motive == "follow_up":
-            # 跟进聚合窗口在群状态机内等待：期间到达的消息进入同一窗口
-            await asyncio.sleep(self._reply_config.follow_up_aggregate_window)
-            if not pending_reply and not self._state.get_anchor(group_id).active:
-                await self._release_gate(group_id, "follow-up inactive")
-                event.stop_event()
+        release_reason = "decision aborted"
+        try:
+            # 这条消息已被上一轮回复的决策上下文覆盖，不再重复决策
+            if self._gate.covered(group_id, message_at):
+                logger.debug(
+                    "Iris Reply: message already covered by previous round for group %s",
+                    group_id,
+                )
+                release_reason = "covered"
                 return True
 
-        # 本轮决策读取到这里为止的全部窗口消息
-        self._gate.update_watermark(group_id, self._latest_window_timestamp(group_id))
+            if motive == "follow_up":
+                # 跟进聚合窗口在群状态机内等待：期间到达的消息进入同一窗口
+                await asyncio.sleep(self._reply_config.follow_up_aggregate_window)
+                if not pending_reply and not self._state.get_anchor(group_id).active:
+                    release_reason = "follow-up inactive"
+                    return True
 
-        req = DecisionRequest(group_id=group_id, wake="message", motive=motive)
-        outcome = await self._decision_core.decide(req, self._llm_manager, provider_id)
+            # 本轮决策读取到这里为止的全部窗口消息
+            self._gate.update_watermark(group_id, self._latest_window_timestamp(group_id))
 
-        if outcome.error or outcome.decision is None:
-            if outcome.error_kind == "input_content_safety_1026":
-                cleanup = await self._clear_rejected_reply_context(
-                    group_id,
-                    outcome.dynamic_context_sources,
-                )
-                logger.error(
-                    "Iris Reply: decision input rejected by provider safety filter "
-                    f"for group {group_id} (1026, retryable=false, "
-                    f"dynamic_sources={cleanup.dynamic_source_count}, "
-                    f"window_removed={cleanup.window_removed}, "
-                    f"observation_cleared={cleanup.observation_cleared}, "
-                    f"anchor_cleared={cleanup.anchor_cleared}): "
-                    f"{outcome.error}"
-                )
-            else:
-                logger.error(f"Iris Reply: decision LLM call failed for group {group_id}: {outcome.error}")
-                await self._state.save_dirty(self._kv_save)
-            self._stats.record_decision_error(group_id, motive)
-            await self._release_gate(group_id, "decision error")
-            event.stop_event()
-            return True
+            req = DecisionRequest(group_id=group_id, wake="message", motive=motive)
+            outcome = await self._decision_core.decide(req, self._llm_manager, provider_id)
 
-        decision = outcome.decision
-        logger.info(
-            f"Iris Reply: decision raw for group {group_id} (motive={motive}, "
-            f"len={len(outcome.raw_text)}): {outcome.raw_text:.500s}"
-        )
-        self._stats.record_decision(
-            group_id, motive,
-            system_prompt=outcome.system_prompt,
-            user_prompt=outcome.user_prompt,
-            response_text=outcome.raw_text,
-            decision=decision,
-            duration_ms=outcome.duration_ms,
-        )
-        logger.info(
-            f"Iris Reply: decision parsed for group {group_id}: speak={decision.should_speak}, "
-            f"drifted={decision.drifted}, watch={decision.watch}, "
-            f"watch_keywords={decision.watch_keywords}"
-        )
-
-        async with self._state.get_lock(group_id):
-            if decision.observation:
-                self._state.set_observation(group_id, decision.observation)
-
-        if decision.parse_failed:
-            logger.warning(f"Iris Reply: decision parse failed for group {group_id}")
-            await self._state.save_dirty(self._kv_save)
-            await self._release_gate(group_id, "parse failed")
-            event.stop_event()
-            return True
-
-        if decision.drifted:
-            async with self._state.get_lock(group_id):
-                self._state.close_anchor(group_id)
-                self._state.record_drift(group_id)
-            await self._state.save_dirty(self._kv_save)
-            logger.info(f"Iris Reply: topic drifted for group {group_id}, anchor closed")
-            await self._release_gate(group_id, "drifted")
-            event.stop_event()
-            return True
-
-        if decision.watch or decision.watch_keywords:
-            if decision.should_speak:
-                event.set_extra("iris_pending_watch", (
-                    decision.watch, decision.watch_keywords, decision.why,
-                ))
-            else:
-                async with self._state.get_lock(group_id):
-                    self._state.add_anchor_watch(
+            if outcome.error or outcome.decision is None:
+                if outcome.error_kind == "input_content_safety_1026":
+                    cleanup = await self._clear_rejected_reply_context(
                         group_id,
-                        users=decision.watch or None,
-                        keywords=decision.watch_keywords or None,
-                        reason=decision.why,
+                        outcome.dynamic_context_sources,
                     )
+                    logger.error(
+                        "Iris Reply: decision input rejected by provider safety filter "
+                        f"for group {group_id} (1026, retryable=false, "
+                        f"dynamic_sources={cleanup.dynamic_source_count}, "
+                        f"window_removed={cleanup.window_removed}, "
+                        f"observation_cleared={cleanup.observation_cleared}, "
+                        f"anchor_cleared={cleanup.anchor_cleared}): "
+                        f"{outcome.error}"
+                    )
+                else:
+                    logger.error(f"Iris Reply: decision LLM call failed for group {group_id}: {outcome.error}")
+                    await self._state.save_dirty(self._kv_save)
+                self._stats.record_decision_error(group_id, motive)
+                release_reason = "decision error"
+                return True
+
+            decision = outcome.decision
             logger.info(
-                f"Iris Reply: decision watch for group {group_id}, users={decision.watch}, "
-                f"keywords={decision.watch_keywords}, reason={decision.why} (speak={decision.should_speak})"
+                f"Iris Reply: decision raw for group {group_id} (motive={motive}, "
+                f"len={len(outcome.raw_text)}): {outcome.raw_text:.500s}"
+            )
+            self._stats.record_decision(
+                group_id, motive,
+                system_prompt=outcome.system_prompt,
+                user_prompt=outcome.user_prompt,
+                response_text=outcome.raw_text,
+                decision=decision,
+                duration_ms=outcome.duration_ms,
+            )
+            logger.info(
+                f"Iris Reply: decision parsed for group {group_id}: speak={decision.should_speak}, "
+                f"drifted={decision.drifted}, watch={decision.watch}, "
+                f"watch_keywords={decision.watch_keywords}"
             )
 
-        if not decision.should_speak:
-            await self._state.save_dirty(self._kv_save)
-            logger.debug(f"Iris Reply: decision skip for group {group_id}")
-            await self._release_gate(group_id, "decision skip")
-            event.stop_event()
-            return True
+            async with self._state.get_lock(group_id):
+                if decision.observation:
+                    self._state.set_observation(group_id, decision.observation)
 
-        # 进入回复中：保持群状态直到回复真正发送（或响应为空）再释放
-        event.set_extra("iris_mode", motive)
-        event.set_extra("iris_llm_provider_id", provider_id)
-        event.set_extra("iris_decision_obs", decision.observation)
+            if decision.parse_failed:
+                logger.warning(f"Iris Reply: decision parse failed for group {group_id}")
+                await self._state.save_dirty(self._kv_save)
+                release_reason = "parse failed"
+                return True
 
-        hint = SPEAK_HINTS.get(motive, SPEAK_HINTS["chime_in"])
-        # 发言提示延迟到记忆注入之后追加（见 on_llm_request），
-        # 保持「上下文在前、指令在后」的提示顺序
-        event.set_extra("iris_speak_hint", hint)
-        logger.info(f"Iris Reply: decision speak ({motive}) for group {group_id}")
-        return False
+            if decision.drifted:
+                async with self._state.get_lock(group_id):
+                    self._state.close_anchor(group_id)
+                    self._state.record_drift(group_id)
+                await self._state.save_dirty(self._kv_save)
+                logger.info(f"Iris Reply: topic drifted for group {group_id}, anchor closed")
+                release_reason = "drifted"
+                return True
+
+            if decision.watch or decision.watch_keywords:
+                if decision.should_speak:
+                    event.set_extra("iris_pending_watch", (
+                        decision.watch, decision.watch_keywords, decision.why,
+                    ))
+                else:
+                    async with self._state.get_lock(group_id):
+                        self._state.add_anchor_watch(
+                            group_id,
+                            users=decision.watch or None,
+                            keywords=decision.watch_keywords or None,
+                            reason=decision.why,
+                        )
+                logger.info(
+                    f"Iris Reply: decision watch for group {group_id}, users={decision.watch}, "
+                    f"keywords={decision.watch_keywords}, reason={decision.why} (speak={decision.should_speak})"
+                )
+
+            if not decision.should_speak:
+                await self._state.save_dirty(self._kv_save)
+                logger.debug(f"Iris Reply: decision skip for group {group_id}")
+                release_reason = "decision skip"
+                return True
+
+            # 进入回复中：保持群状态直到回复真正发送（或响应为空）再释放
+            event.set_extra("iris_mode", motive)
+            event.set_extra("iris_llm_provider_id", provider_id)
+            event.set_extra("iris_decision_obs", decision.observation)
+
+            hint = SPEAK_HINTS.get(motive, SPEAK_HINTS["chime_in"])
+            # 发言提示延迟到记忆注入之后追加（见 on_llm_request），
+            # 保持「上下文在前、指令在后」的提示顺序
+            event.set_extra("iris_speak_hint", hint)
+            logger.info(f"Iris Reply: decision speak ({motive}) for group {group_id}")
+            release_reason = ""
+            return False
+        finally:
+            if release_reason:
+                await self._release_gate(group_id, release_reason)
+                event.stop_event()
 
     async def _enter_passive_reply(
         self, event: AstrMessageEvent, group_id: str

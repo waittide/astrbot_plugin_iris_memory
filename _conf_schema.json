@@ -153,36 +153,6 @@
         "default": true,
         "description": "启用 L2 记忆库"
       },
-      "embedding_source": {
-        "type": "string",
-        "default": "provider",
-        "description": "嵌入模型来源",
-        "hint": "Provider：使用 AstrBot 配置的 Embedding 服务（推荐，无需下载模型）；本地：使用内置 sentence-transformers 模型（需下载约 96MB 模型文件）",
-        "options": [
-          "provider",
-          "local"
-        ]
-      },
-      "embedding_provider": {
-        "type": "string",
-        "default": "",
-        "description": "Embedding Provider ID",
-        "hint": "填写 AstrBot 中配置的 Embedding Provider ID（可在 AstrBot 管理面板的「模型」页面查看），留空则自动使用第一个可用的"
-      },
-      "embedding_model": {
-        "type": "string",
-        "default": "BAAI/bge-small-zh-v1.5",
-        "description": "本地嵌入模型",
-        "hint": "仅当嵌入来源为「本地」时生效。更换后需重建记忆库",
-        "options": [
-          "BAAI/bge-small-zh-v1.5",
-          "moka-ai/m3e-small",
-          "moka-ai/m3e-base",
-          "BAAI/bge-base-zh-v1.5",
-          "shibing624/text2vec-base-chinese",
-          "all-MiniLM-L6-v2"
-        ]
-      },
       "top_k": {
         "type": "int",
         "default": 10,

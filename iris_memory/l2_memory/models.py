@@ -17,12 +17,11 @@ from typing import Optional, Dict, Any
 class MemoryEntry:
     """记忆条目数据类
 
-    存储单条记忆的完整信息，包括内容、向量、元数据等。
+    存储单条记忆的完整信息，包括内容、元数据等。
 
     Attributes:
         id: 记忆唯一标识符
         content: 记忆内容文本
-        embedding: 向量表示（可选，ChromaDB 内部管理）
         metadata: 元数据字典，包含：
             - group_id: 群聊ID
             - user_id: 用户ID（可选）
@@ -55,13 +54,12 @@ class MemoryEntry:
     content: str
     metadata: Dict[str, Any] = field(default_factory=dict)
     persona_id: str = "default"
-    embedding: Optional[list[float]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典格式
 
         Returns:
-            包含所有字段的字典（不含 embedding），persona_id 单独列出
+            包含所有字段的字典，persona_id 单独列出
             以便导出/导入回合透传人格归属
         """
         return {
@@ -90,7 +88,6 @@ class MemoryEntry:
             content=data["content"],
             metadata=data.get("metadata", {}),
             persona_id=data.get("persona_id", "default"),
-            embedding=data.get("embedding"),
         )
 
     @property

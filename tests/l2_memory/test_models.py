@@ -23,14 +23,6 @@ class TestMemoryEntry:
         assert entry.id == "mem_001"
         assert entry.content == "用户喜欢吃苹果"
         assert entry.metadata["group_id"] == "group_123"
-        assert entry.embedding is None
-
-    def test_entry_with_embedding(self):
-        """测试带向量的记忆条目"""
-        embedding = [0.1, 0.2, 0.3]
-        entry = MemoryEntry(id="mem_002", content="测试向量", embedding=embedding)
-
-        assert entry.embedding == embedding
 
     def test_to_dict(self):
         """测试转换为字典"""
@@ -43,7 +35,6 @@ class TestMemoryEntry:
         assert data["id"] == "mem_003"
         assert data["content"] == "测试内容"
         assert data["metadata"]["group_id"] == "group_123"
-        assert "embedding" not in data  # to_dict 不包含 embedding
 
     def test_from_dict(self):
         """测试从字典创建"""
@@ -51,7 +42,6 @@ class TestMemoryEntry:
             "id": "mem_004",
             "content": "测试内容",
             "metadata": {"user_id": "user_456"},
-            "embedding": [0.1, 0.2],
         }
 
         entry = MemoryEntry.from_dict(data)
@@ -59,7 +49,6 @@ class TestMemoryEntry:
         assert entry.id == "mem_004"
         assert entry.content == "测试内容"
         assert entry.metadata == {"user_id": "user_456"}
-        assert entry.embedding == [0.1, 0.2]
 
     def test_property_accessors(self):
         """测试属性访问器"""

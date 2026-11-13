@@ -62,7 +62,7 @@ class ProactiveEngine:
         llm_manager,
         packager: ContextPackager,
         umo_get: Callable[[str], str | None],
-        is_busy: Callable[[str], bool],
+        is_busy: Callable[[str], bool] | None = None,
         gate: GroupReplyGate | None = None,
         self_id_get: Callable[[], str],
         save_fn: Callable[[], Awaitable[None]],
@@ -98,7 +98,7 @@ class ProactiveEngine:
             return False
         if self._gate is not None:
             return self._gate.is_replying(group_id)
-        return self._is_busy(group_id)
+        return self._is_busy(group_id) if self._is_busy is not None else False
 
     async def start(self) -> None:
         if not self._config.proactive_enabled:
@@ -238,35 +238,31 @@ class ProactiveEngine:
             if not self._gate.try_acquire(group_id):
                 return "该群正在回复中，稍后再试"
             holds_gate = True
-        elif self._is_busy(group_id):
+        elif self._is_busy is not None and self._is_busy(group_id):
             return "该群有回复进行中，稍后再试"
-
-        umo = self._umo_get(group_id)
-        if not umo:
-            if holds_gate:
-                await self._gate.release(group_id)
-            return "暂无该群的会话标识（等群里有过消息后再试）"
-
-        provider_id = self._config.provider_id
-        if not provider_id:
-            try:
-                provider_id = await self._context.get_current_chat_provider_id(umo)
-            except Exception:
-                provider_id = None
-        if not provider_id:
-            if holds_gate:
-                await self._gate.release(group_id)
-            return "无法获取 LLM 提供商"
-
-        messages = self._window.get_messages(group_id)
-        quiet_minutes = int((time.time() - messages[-1].timestamp) / 60) if messages else 0
-        context_cutoff = max(
-            [m.timestamp for m in messages]
-            + [self._state.get_state(group_id).last_human_message_at]
-        )
 
         self._initiating.add(group_id)
         try:
+            umo = self._umo_get(group_id)
+            if not umo:
+                return "暂无该群的会话标识（等群里有过消息后再试）"
+
+            provider_id = self._config.provider_id
+            if not provider_id:
+                try:
+                    provider_id = await self._context.get_current_chat_provider_id(umo)
+                except Exception:
+                    provider_id = None
+            if not provider_id:
+                return "无法获取 LLM 提供商"
+
+            messages = self._window.get_messages(group_id)
+            quiet_minutes = int((time.time() - messages[-1].timestamp) / 60) if messages else 0
+            context_cutoff = max(
+                [m.timestamp for m in messages]
+                + [self._state.get_state(group_id).last_human_message_at]
+            )
+
             req = DecisionRequest(
                 group_id=group_id,
                 wake="timer",
