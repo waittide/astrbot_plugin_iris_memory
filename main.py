@@ -64,8 +64,6 @@ from .iris_memory.commands import (
     L3CommandHandler,
     ProfileCommandHandler,
     AllCommandHandler,
-    LearningCommandHandler,
-    EvolutionCommandHandler,
 )
 from .iris_memory.proactive.admin import AdminCommands
 from .iris_memory.proactive.runtime import GroupReplyGate
@@ -341,8 +339,6 @@ class IrisMemoryPlugin(Star):
                 L3CommandHandler(),
                 ProfileCommandHandler(),
                 AllCommandHandler(),
-                LearningCommandHandler(),
-                EvolutionCommandHandler(),
             ]
             for handler in handlers:
                 registry.register(handler)

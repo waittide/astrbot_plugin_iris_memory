@@ -221,7 +221,6 @@ async def preprocess_llm_request(
         "profile": {},
         "l2": {},
         "l3": {},
-        "learning": {},
     }
 
     image_started = time.perf_counter()
@@ -258,16 +257,6 @@ async def preprocess_llm_request(
             ("", []),
         )
     )
-    learning_task = asyncio.create_task(
-        _run_stage(
-            "learning",
-            inject_meta["learning"],
-            _collect_learning(
-                event, req, component_manager, meta=inject_meta["learning"]
-            ),
-            "",
-        )
-    )
 
     async def collect_l3_after_l2() -> str:
         _l2_text, l2_results = await l2_task
@@ -285,14 +274,14 @@ async def preprocess_llm_request(
         )
 
     l3_task = asyncio.create_task(collect_l3_after_l2())
-    l1_text, profile_text, l2_pair, l3_text, learning_text = await asyncio.gather(
-        l1_task, profile_task, l2_task, l3_task, learning_task
+    l1_text, profile_text, l2_pair, l3_text = await asyncio.gather(
+        l1_task, profile_task, l2_task, l3_task
     )
     l2_text, _l2_results = l2_pair
     total_duration_ms = _elapsed_ms(preprocess_started)
 
     combined = _inject_to_extra_user_content_parts(
-        req, l1_text, profile_text, l2_text, l3_text, learning_text
+        req, l1_text, profile_text, l2_text, l3_text
     )
 
     _record_injection_log(
@@ -302,7 +291,6 @@ async def preprocess_llm_request(
         profile_text=profile_text,
         l2_text=l2_text,
         l3_text=l3_text,
-        learning_text=learning_text,
         meta=inject_meta,
         combined=combined,
         user_message=user_message,
@@ -457,7 +445,6 @@ def _record_injection_log(
     profile_text: str,
     l2_text: str,
     l3_text: str,
-    learning_text: str,
     meta: dict,
     combined: str,
     user_message: str,
@@ -483,7 +470,6 @@ def _record_injection_log(
             "profile": {"chars": len(profile_text), "injected": bool(profile_text), **meta.get("profile", {})},
             "l2_memory": {"chars": len(l2_text), "injected": bool(l2_text), **meta.get("l2", {})},
             "l3_kg": {"chars": len(l3_text), "injected": bool(l3_text), **meta.get("l3", {})},
-            "learning": {"chars": len(learning_text), "injected": bool(learning_text), **meta.get("learning", {})},
         }
         injected_count = sum(1 for s in sections.values() if s["injected"])
 
@@ -509,7 +495,7 @@ def _record_injection_log(
             image=image_meta,
             stage_timings_ms={
                 stage: round(float(meta.get(stage, {}).get("duration_ms", 0.0)), 2)
-                for stage in ("image", "l1", "profile", "l2", "l3", "learning")
+                for stage in ("image", "l1", "profile", "l2", "l3")
             },
             total_duration_ms=round(total_duration_ms, 2),
             content=combined,
@@ -524,33 +510,13 @@ def _inject_to_extra_user_content_parts(
     profile_text: str,
     l2_text: str,
     l3_text: str,
-    learning_text: str = "",
 ) -> str:
-    """将所有动态内容注入到 req.extra_user_content_parts
-
-    所有内容（L1/画像/L2/L3/learning）均为每轮变化的动态上下文，通过
-    extra_user_content_parts 注入，避免修改 system_prompt 导致
-    提示词缓存失效。
-
-    注入顺序：L1 上下文 → 画像 → L2 记忆 → L3 知识图谱 → learning 学习上下文
-
-    Args:
-        req: LLM 提供者请求对象
-        l1_text: L1 对话上下文文本
-        profile_text: 用户画像文本
-        l2_text: 相关记忆文本
-        l3_text: 知识图谱文本
-        learning_text: 学习上下文文本（表达风格/暗语/对话样例）
-
-    Returns:
-        实际注入的合并文本，无内容注入时返回空字符串
-    """
+    """将所有动态内容注入到 req.extra_user_content_parts"""
     sections = [
         ("l1_context", l1_text),
         ("profile", profile_text),
         ("l2_memory", l2_text),
         ("l3_kg", l3_text),
-        ("learning", learning_text),
     ]
 
     parts = []
@@ -1351,76 +1317,6 @@ async def _collect_l3_knowledge_graph(
 
     except Exception as e:
         logger.error(f"L3 知识图谱注入失败: {e}", exc_info=True)
-        if meta is not None:
-            meta["error"] = str(e)
-        return ""
-
-
-async def _collect_learning(
-    event: "AstrMessageEvent",
-    req: "ProviderRequest",
-    component_manager: "ComponentManager",
-    meta: Optional[dict] = None,
-) -> str:
-    """收集 learning 学习上下文文本（不直接修改 req）
-
-    组装本群已学习的表达模式、命中暗语解释与 few-shot 对话样例，
-    独立 token 预算（learning_inject_max_tokens）。
-
-    Args:
-        event: AstrBot 消息事件对象
-        req: 当前 Provider 请求，用于读取生效 Persona 与 system prompt
-        component_manager: 组件管理器实例
-        meta: 可选的运行日志元信息字典，函数会填充条目数与预算统计
-
-    Returns:
-        格式化的学习上下文文本，不可用时返回空字符串
-    """
-    from ..config import get_config
-
-    config = get_config()
-
-    if not config.get("learning.enable"):
-        logger.debug("学习模块未启用，跳过学习上下文注入")
-        if meta is not None:
-            meta["skipped"] = "disabled"
-        return ""
-
-    # 组件仅在 learning.enable=true 时注册，上面的配置检查已覆盖未启用场景，
-    # 故此处不再有 disabled 分支（对照 _collect_l2_memory 的历史结构，该分支实际不可达）
-    learning_status = component_manager.check_component("learning")
-    if learning_status == "initializing":
-        logger.debug("学习模块正在初始化中，跳过学习上下文注入")
-        if meta is not None:
-            meta["skipped"] = "initializing"
-        return ""
-    if learning_status != "available":
-        logger.debug("学习模块组件不可用，跳过学习上下文注入")
-        if meta is not None:
-            meta["skipped"] = "component_unavailable"
-        return ""
-
-    learning = component_manager.get_available_component("learning")
-
-    try:
-        conversation = getattr(req, "conversation", None)
-        raw_persona_id = getattr(conversation, "persona_id", None)
-        persona_id = str(raw_persona_id or "default").strip() or "default"
-        persona_prompt = getattr(req, "system_prompt", "") or ""
-        # on_llm_response 没有 ProviderRequest，通过事件透传本轮实际 Persona，
-        # 保证新采集的 few-shot / 表达模式归属正确。
-        try:
-            event.set_extra("iris_learning_persona_id", persona_id)
-        except Exception:
-            pass
-        return await learning.build_context(
-            event,
-            meta=meta,
-            persona_id=persona_id,
-            persona_prompt=persona_prompt,
-        )
-    except Exception as e:
-        logger.error(f"learning 学习上下文注入失败: {e}", exc_info=True)
         if meta is not None:
             meta["error"] = str(e)
         return ""

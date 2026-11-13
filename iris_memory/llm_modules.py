@@ -5,12 +5,6 @@ L2_QUERY_REWRITE = "l2_query_rewrite"
 L3_KG_EXTRACTION = "l3_kg_extraction"
 IMAGE_PARSING = "image_parsing"
 PROFILE_ANALYSIS = "profile_analysis"
-LEARNING_DIALOGUE_REVIEW = "learning_dialogue_review"
-LEARNING_PERSONA_REVIEW = "learning_persona_review"
-LEARNING_JARGON_REVIEW = "learning_jargon_review"
-PERSONA_EVOLUTION_ANALYSIS = "persona_evolution_analysis"
-PERSONA_EVOLUTION_GENERATE = "persona_evolution_generate"
-PERSONA_EVOLUTION_REVIEW = "persona_evolution_review"
 PROACTIVE_DECISION_CHIME_IN = "proactive_decision_chime_in"
 PROACTIVE_DECISION_FOLLOW_UP = "proactive_decision_follow_up"
 PROACTIVE_DECISION_INITIATE = "proactive_decision_initiate"
@@ -27,7 +21,7 @@ DREAM_PATTERN_DISCOVERY = "dream_pattern_discovery"
 DREAM_KNOWLEDGE_INDUCTION = "dream_knowledge_induction"
 DREAM_PRUNING_CONFIRM = "dream_pruning_confirm"
 
-LEGACY_MODULES = frozenset({"default", "learning_review", "scheduled_tasks"})
+LEGACY_MODULES = frozenset({"default", "scheduled_tasks"})
 ALL_LLM_MODULES = frozenset(
     value
     for name, value in globals().copy().items()

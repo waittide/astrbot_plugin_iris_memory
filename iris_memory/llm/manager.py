@@ -911,13 +911,6 @@ class LLMManager(Component):
             "image_parsing": "l1_buffer.image_parsing.provider",
             "profile_analysis": "profile.analysis_provider",
             "l2_query_rewrite": "l2_query_rewrite_provider",
-            "learning_review": "learning.review_provider",
-            "learning_dialogue_review": "learning.review_provider",
-            "learning_persona_review": "learning.review_provider",
-            "learning_jargon_review": "learning.review_provider",
-            "persona_evolution_analysis": "persona_evolution.provider",
-            "persona_evolution_generate": "persona_evolution.provider",
-            "persona_evolution_review": "persona_evolution.review_provider",
         }
 
         config_key = module_config_map.get(module)

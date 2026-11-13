@@ -131,24 +131,6 @@ async def handle_user_message(
     """
     await _add_to_l1_buffer(event, component_manager)
 
-    # 学习模块旁路采集：组件不可用则跳过，异常不影响主流程
-    learning = component_manager.get_available_component("learning")
-    if learning:
-        try:
-            await learning.on_message(event)
-        except Exception as e:
-            logger.error(f"learning on_message 失败，已隔离：{e}", exc_info=True)
-
-    # 人格自迭代旁路采集：组件不可用则跳过，异常不影响主流程
-    persona_evolution = component_manager.get_available_component("persona_evolution")
-    if persona_evolution:
-        try:
-            await persona_evolution.on_message(event)
-        except Exception as e:
-            logger.error(
-                f"persona_evolution on_message 失败，已隔离：{e}", exc_info=True
-            )
-
     # 图片下载、哈希、入队与 all 模式解析可能包含外部 HTTP/LLM
     # 调用，统一移到后台，不再阻塞消息进入主 LLM 的关键路径。
     _schedule_image_pipeline(event, component_manager)
