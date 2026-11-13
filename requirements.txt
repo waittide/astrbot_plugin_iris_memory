@@ -1,9 +1,6 @@
 # Token 计数
 tiktoken>=0.5.0
 
-# Web 框架
-quart>=0.19.0
-
 # 图片处理（pHash 去重 + 无效图过滤）
 Pillow>=10.0.0
 

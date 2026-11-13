@@ -54,7 +54,6 @@ from .iris_memory.core import (
 )
 from .iris_memory.tools import register_llm_tools
 from .iris_memory.utils.token_counter import warm_up_encoders_async
-from .iris_memory.web import register_all_routes
 from .iris_memory.llm import LLMManager
 from .iris_memory.llm_modules import FRAMEWORK_REPLY, proactive_reply_module
 from .iris_memory.commands import (
@@ -69,10 +68,6 @@ from .iris_memory.commands import (
     EvolutionCommandHandler,
 )
 from .iris_memory.proactive.admin import AdminCommands
-from .iris_memory.proactive.api import (
-    register_web_apis as register_reply_web_apis,
-    sync_stats_group_state,
-)
 from .iris_memory.proactive.runtime import GroupReplyGate
 from .iris_memory.proactive.config import ConfigManager as ReplyConfigManager
 from .iris_memory.proactive.decision import (
@@ -231,7 +226,6 @@ class IrisMemoryPlugin(Star):
             # ── 外部注册动作（依赖就绪后在构造函数末尾统一执行） ──
             self._register_llm_tools()
             self._register_command_handlers()
-            self._register_web_api()
 
             self._warn_empty_mention_conflict()
 
@@ -356,12 +350,6 @@ class IrisMemoryPlugin(Star):
         except Exception as e:
             logger.error(f"注册记忆指令处理器失败：{e}", exc_info=True)
 
-    def _register_web_api(self) -> None:
-        try:
-            register_all_routes(self.context)
-        except Exception as e:
-            logger.error(f"注册记忆 Web API 失败：{e}", exc_info=True)
-
     # ========================================================================
     # 生命周期
     # ========================================================================
@@ -394,14 +382,6 @@ class IrisMemoryPlugin(Star):
             logger.info(f"已将 {len(migrated)} 项旧版主动回复页面配置迁移至隐藏参数")
         self._save_task = asyncio.create_task(self._periodic_save())
         self._stats.enabled = self._reply_config.stats_enabled
-        register_reply_web_apis(
-            context=self.context,
-            plugin_name=PLUGIN_NAME,
-            state=self._state,
-            stats=self._stats,
-            window=self._sliding_window,
-            kv_save=self._kv_save,
-        )
         await self._proactive.start()
 
         # 4. 功能重叠插件检测（重复注入/门控警告）
@@ -458,7 +438,6 @@ class IrisMemoryPlugin(Star):
                     await self._kv_save(_UMO_KV_KEY, dict(self._group_umo))
                 self._sliding_window.cleanup(self._state.get_whitelist())
                 await self._cleanup_stale_active()
-                sync_stats_group_state(self._state, self._stats)
             except Exception as e:
                 logger.warning(f"Iris Reply: periodic save error: {e}")
 
