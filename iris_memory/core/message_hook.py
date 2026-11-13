@@ -3,24 +3,34 @@
 
 负责处理用户发送的消息钩子，包括：
 - 添加用户消息到 L1 Buffer
+- 嵌套合并转发提取入队
+- 可选图片简述（仅当显式选择支持视觉的模型时生效）
 - 用户画像更新
 """
 
 from collections import OrderedDict
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from ..core import get_logger
 from ..core.event_extras import L1_CURRENT_EVENT_RECORD_COUNT
+from ..llm_modules import IMAGE_CAPTION
 
 if TYPE_CHECKING:
     from astrbot.api.event import AstrMessageEvent
     from ..core.components import ComponentManager
     from ..l1_buffer import L1Buffer
+    from ..llm import LLMManager
 
 logger = get_logger("message_hook")
 
 _name_cache: OrderedDict = OrderedDict()
 _NAME_CACHE_MAX_SIZE = 1000
+_RICH_MEDIA_EXTRA = "_iris_rich_media_cache"
+
+_IMAGE_CAPTION_PROMPT = (
+    "请用一句简短中文客观描述图片的主要内容（不超过60字，不要换行或添加多余前后缀）。"
+)
 
 
 def _mark_current_event_recorded(event: "AstrMessageEvent") -> None:
@@ -48,6 +58,203 @@ def _set_cached_name(key: str, name: str) -> None:
         if len(_name_cache) >= _NAME_CACHE_MAX_SIZE:
             _name_cache.popitem(last=False)
         _name_cache[key] = name
+
+
+def _extract_image_urls(event: "AstrMessageEvent", adapter: Any) -> list[str]:
+    """从消息事件中提取最多 3 个可用图片 URL 或本地路径。"""
+    urls: list[str] = []
+    seen: set[str] = set()
+
+    def _add(candidate: Any) -> None:
+        if not candidate or len(urls) >= 3:
+            return
+        val = str(candidate).strip()
+        if not val or val in seen:
+            return
+        if val.startswith(("http://", "https://", "data:image/", "file://")):
+            seen.add(val)
+            urls.append(val)
+        elif Path(val).is_file():
+            seen.add(val)
+            urls.append(val)
+
+    try:
+        messages = (
+            event.get_messages()
+            if hasattr(event, "get_messages")
+            else getattr(getattr(event, "message_obj", None), "message", None) or []
+        )
+        for comp in messages:
+            if type(comp).__name__ == "Image":
+                _add(getattr(comp, "url", None) or getattr(comp, "file", None))
+    except Exception:
+        pass
+
+    if not urls:
+        try:
+            raw_msg = adapter.get_raw_message(event)
+            segments = raw_msg.get("message", []) if isinstance(raw_msg, dict) else []
+            if isinstance(segments, list):
+                for seg in segments:
+                    if isinstance(seg, dict) and seg.get("type") == "image":
+                        data = seg.get("data", {}) or {}
+                        _add(data.get("url") or data.get("file"))
+        except Exception:
+            pass
+
+    return urls
+
+
+async def _caption_images_if_configured(
+    event: "AstrMessageEvent",
+    adapter: Any,
+    component_manager: "ComponentManager",
+) -> str:
+    """若显式配置了支持图片的图片转述模型，则生成简短中文描述；否则静默跳过。"""
+    from ..config import get_config
+
+    image_provider = str(get_config().get("l1_buffer.image_provider", "") or "").strip()
+    if not image_provider:
+        return ""
+
+    llm_raw = component_manager.get_available_component("llm_manager")
+    if not llm_raw:
+        return ""
+    llm_manager = cast("LLMManager", llm_raw)
+
+    if not llm_manager.supports_image(image_provider):
+        logger.debug(f"所选图片模型 {image_provider} 不支持图片模态，跳过图片转述")
+        return ""
+
+    image_urls = _extract_image_urls(event, adapter)
+    if not image_urls:
+        return ""
+
+    try:
+        raw_desc = await llm_manager.generate_direct(
+            prompt=_IMAGE_CAPTION_PROMPT,
+            provider_id=image_provider,
+            image_urls=image_urls,
+            module=IMAGE_CAPTION,
+            timeout=25.0,
+        )
+    except Exception as exc:
+        err_lower = str(exc).lower()
+        if any(
+            kw in err_lower
+            for kw in (
+                "image",
+                "vision",
+                "multimodal",
+                "modality",
+                "unsupported",
+                "not support",
+                "invalid_argument",
+                "400",
+            )
+        ):
+            llm_manager.mark_image_unsupported(image_provider)
+            logger.info(
+                f"模型 {image_provider} 不支持图片输入，后续自动跳过图片转述：{exc}"
+            )
+        else:
+            logger.debug(f"图片转述失败，已跳过：{exc}")
+        return ""
+
+    desc = " ".join((raw_desc or "").strip().splitlines()).strip()
+    if not desc:
+        return ""
+    if len(desc) > 120:
+        desc = desc[:120] + "…"
+    return f"[图片: {desc}]"
+
+
+async def _build_forward_block(
+    event: "AstrMessageEvent", adapter: Any
+) -> tuple[str, dict[str, Any] | None]:
+    """提取并格式化合并转发消息（含多层嵌套）。"""
+    try:
+        forward_messages = await adapter.get_forward_messages(event)
+    except Exception as e:
+        logger.debug(f"获取合并转发消息失败: {e}")
+        forward_messages = []
+
+    if not forward_messages:
+        return "", None
+
+    from ..config import get_config
+    from ..utils import count_tokens, sanitize_input
+
+    max_single_tokens = cast(
+        int, get_config().get("l1_max_single_message_tokens", 500)
+    )
+    budget = max(max_single_tokens - 30, 64)
+
+    included_lines: list[str] = []
+    included_count = 0
+    used_tokens = 0
+    truncated = False
+
+    for fwd in forward_messages:
+        if not fwd.content:
+            continue
+        fwd_content = sanitize_input(fwd.content, source="user_message")
+        if not fwd_content:
+            continue
+        user_label = fwd.user_name or "用户"
+        line = f"[{user_label}]: {fwd_content}"
+        line_tokens = count_tokens(line)
+
+        if used_tokens + line_tokens > budget and included_lines:
+            truncated = True
+            break
+        included_lines.append(line)
+        included_count += 1
+        used_tokens += line_tokens
+
+    if not included_lines:
+        return "", None
+
+    parts = ["【合并转发内容】"] + included_lines
+    if truncated:
+        total = sum(1 for f in forward_messages if f.content)
+        parts.append(f"（已截断，共 {total} 条，已展示 {included_count} 条）")
+    combined_content = "\n".join(parts)
+
+    fwd_metadata: dict[str, Any] = {
+        "forward": True,
+        "forward_total": len(forward_messages),
+        "forward_included": included_count,
+        "forward_truncated": truncated,
+    }
+    return combined_content, fwd_metadata
+
+
+async def extract_event_rich_media(
+    event: "AstrMessageEvent", component_manager: "ComponentManager"
+) -> tuple[str, str, dict[str, Any] | None]:
+    """幂等提取单次消息中的（图片简述, 合并转发块, 转发元数据），缓存在 event extra 中。"""
+    try:
+        cached = event.get_extra(_RICH_MEDIA_EXTRA)
+        if isinstance(cached, tuple) and len(cached) == 3:
+            return cached
+    except Exception:
+        pass
+
+    from ..platform import get_adapter
+
+    adapter = get_adapter(event)
+    image_caption = await _caption_images_if_configured(
+        event, adapter, component_manager
+    )
+    forward_text, forward_meta = await _build_forward_block(event, adapter)
+    result = (image_caption, forward_text, forward_meta)
+
+    try:
+        event.set_extra(_RICH_MEDIA_EXTRA, result)
+    except Exception:
+        pass
+    return result
 
 
 async def handle_user_message(
@@ -137,17 +344,9 @@ async def _update_profile_names(
 async def _add_to_l1_buffer(
     event: "AstrMessageEvent", component_manager: "ComponentManager"
 ) -> None:
-    """添加用户消息到 L1 Buffer（内部函数）"""
+    """添加用户消息（含可选图片简述与嵌套合并转发）到 L1 Buffer"""
     from ..platform import get_adapter
-
-    content = event.message_str
-    if not content:
-        logger.debug("消息内容为空，跳过添加")
-        return
-
     from ..utils import sanitize_input
-
-    content = sanitize_input(content, source="user_message")
 
     buffer = component_manager.get_available_component("l1_buffer")
     if not buffer:
@@ -155,6 +354,16 @@ async def _add_to_l1_buffer(
         return
 
     l1_buffer = cast("L1Buffer", buffer)
+
+    raw_text = sanitize_input(event.message_str or "", source="user_message")
+    image_caption, forward_text, forward_meta = await extract_event_rich_media(
+        event, component_manager
+    )
+    main_content = " ".join(p for p in (raw_text, image_caption) if p).strip()
+
+    if not main_content and not forward_text:
+        logger.debug("消息无文本、图片简述或合并转发内容，跳过添加")
+        return
 
     adapter = get_adapter(event)
     group_id = adapter.get_group_id(event)
@@ -167,7 +376,7 @@ async def _add_to_l1_buffer(
 
     persona_id = await resolve_persona(component_manager, event)
 
-    metadata = {}
+    metadata: dict[str, Any] = {}
     if user_name:
         metadata["user_name"] = user_name
 
@@ -198,90 +407,31 @@ async def _add_to_l1_buffer(
                         metadata["reply_user_name"] = api_reply.user_name
                     if not metadata.get("reply_user_id") and api_reply.user_id:
                         metadata["reply_user_id"] = api_reply.user_id
-                    logger.debug(
-                        f"从平台 API 回填回复信息：message_id={reply_info.message_id}"
-                    )
 
-    await l1_buffer.add_message(
-        group_id=session_id,
-        role="user",
-        content=content,
-        source=user_id,
-        metadata=metadata,
-        persona_id=persona_id,
-    )
-    _mark_current_event_recorded(event)
-
-    logger.debug(f"已添加用户消息到会话 {session_id} 的 L1 Buffer")
-
-    # 展开合并转发消息：拼接为一条消息入队，超长按 token 限制截断
-    try:
-        forward_messages = await adapter.get_forward_messages(event)
-    except Exception as e:
-        logger.debug(f"获取合并转发消息失败: {e}")
-        forward_messages = []
-
-    if forward_messages:
-        from ..config import get_config as _get_cfg
-        from ..utils import count_tokens
-
-        max_single_tokens = cast(
-            int, _get_cfg().get("l1_max_single_message_tokens", 500)
+    if main_content:
+        await l1_buffer.add_message(
+            group_id=session_id,
+            role="user",
+            content=main_content,
+            source=user_id,
+            metadata=metadata,
+            persona_id=persona_id,
         )
+        _mark_current_event_recorded(event)
 
-        reserve_tokens = 30
-        budget = max(max_single_tokens - reserve_tokens, 64)
-
-        included_lines: list[str] = []
-        included_count = 0
-        used_tokens = 0
-        truncated = False
-
-        for fwd in forward_messages:
-            if not fwd.content:
-                continue
-            fwd_content = sanitize_input(fwd.content, source="user_message")
-            if not fwd_content:
-                continue
-            user_label = fwd.user_name or "用户"
-            line = f"[{user_label}]: {fwd_content}"
-            line_tokens = count_tokens(line)
-
-            if used_tokens + line_tokens > budget and included_lines:
-                truncated = True
-                break
-            included_lines.append(line)
-            included_count += 1
-            used_tokens += line_tokens
-
-        if included_lines:
-            header = "【合并转发内容】"
-            parts = [header] + included_lines
-            if truncated:
-                total = sum(1 for f in forward_messages if f.content)
-                parts.append(f"（已截断，共 {total} 条，已展示 {included_count} 条）")
-            combined_content = "\n".join(parts)
-
-            fwd_metadata: dict[str, Any] = {
-                "forward": True,
-                "forward_total": len(forward_messages),
-                "forward_included": included_count,
-                "forward_truncated": truncated,
-            }
-            await l1_buffer.add_message(
-                group_id=session_id,
-                role="user",
-                content=combined_content,
-                source=user_id,
-                metadata=fwd_metadata,
-                persona_id=persona_id,
-            )
-            _mark_current_event_recorded(event)
-            logger.debug(
-                f"合并转发消息已入队：会话 {session_id}，"
-                f"包含 {included_count}/{len(forward_messages)} 条子消息，"
-                f"truncated={truncated}"
-            )
+    if forward_text:
+        fwd_meta = dict(forward_meta or {})
+        if user_name:
+            fwd_meta["user_name"] = user_name
+        await l1_buffer.add_message(
+            group_id=session_id,
+            role="user",
+            content=forward_text,
+            source=user_id,
+            metadata=fwd_meta,
+            persona_id=persona_id,
+        )
+        _mark_current_event_recorded(event)
 
     await _update_profile_names(
         component_manager, group_id, group_name, user_id, user_name, persona_id

@@ -35,6 +35,7 @@ class LLMManager(Component):
         self._context = context
         self._storage = storage
         self._governor: Optional[LLMCallGovernor] = None
+        self._unsupported_image_providers: set[str] = set()
 
     @property
     def name(self) -> str:
@@ -318,6 +319,36 @@ class LLMManager(Component):
             logger.debug(f"获取 Provider 实例失败: {e}")
 
         return None
+
+    def supports_image(self, provider_id: str) -> bool:
+        """检查显式指定的 Provider 是否可用且支持图片输入。"""
+        pid = (provider_id or "").strip()
+        if not pid or pid in self._unsupported_image_providers:
+            return False
+        provider = self._get_provider_instance(pid)
+        if not provider:
+            return False
+
+        p_cfg = getattr(provider, "provider_config", None)
+        if not isinstance(p_cfg, dict) and hasattr(self._context, "get_config"):
+            try:
+                all_providers = (self._context.get_config() or {}).get("provider", [])
+                for item in all_providers:
+                    if isinstance(item, dict) and item.get("id") == pid:
+                        p_cfg = item
+                        break
+            except Exception:
+                p_cfg = None
+
+        if isinstance(p_cfg, dict) and "modalities" in p_cfg:
+            modalities = p_cfg.get("modalities")
+            if isinstance(modalities, list) and "image" not in modalities:
+                return False
+        return True
+
+    def mark_image_unsupported(self, provider_id: str) -> None:
+        if provider_id:
+            self._unsupported_image_providers.add(provider_id)
 
     async def resolve_provider(
         self, module: str = "default", provider_id: Optional[str] = None

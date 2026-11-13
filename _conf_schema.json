@@ -21,6 +21,13 @@
         "default": 50,
         "description": "上下文消息条数",
         "hint": "注入 LLM 上下文的最大消息条数，超量时自动总结旧消息为长期记忆。越大上下文越完整，但 Token 消耗越多，最少20条"
+      },
+      "image_provider": {
+        "type": "string",
+        "default": "",
+        "description": "图片转述模型（可选）",
+        "hint": "选择支持视觉的模型将群聊图片简述写入上下文；默认不选（不处理图片），若所选模型不支持图片则自动跳过",
+        "_special": "select_provider"
       }
     }
   },

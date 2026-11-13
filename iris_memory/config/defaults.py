@@ -15,6 +15,7 @@ class L1BufferConfig:
     enable: bool = True
     summary_provider: str = ""
     inject_queue_length: int = 50
+    image_provider: str = ""
 
 
 @dataclass

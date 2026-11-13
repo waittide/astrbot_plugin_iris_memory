@@ -9,6 +9,7 @@ from __future__ import annotations
 from enum import IntEnum
 
 from ..llm_modules import (
+    IMAGE_CAPTION,
     L1_SUMMARIZER,
     L2_QUERY_REWRITE,
     PROFILE_ANALYSIS,
@@ -46,7 +47,7 @@ _INTERACTIVE_MODULES = frozenset(
     }
 )
 
-_NEARLINE_MODULES = frozenset({L1_SUMMARIZER})
+_NEARLINE_MODULES = frozenset({L1_SUMMARIZER, IMAGE_CAPTION})
 
 _BACKGROUND_MODULES = frozenset(
     {

@@ -30,10 +30,8 @@ class Gatekeeper:
         self._config = config
         self._state = state
 
-    def should_process(self, event: AstrMessageEvent) -> bool:
-        message_str = event.message_str
-        if not message_str:
-            return False
+    def should_consider_group(self, event: AstrMessageEvent) -> bool:
+        message_str = event.message_str or ""
         if message_str.startswith("/"):
             return False
         if event.is_private_chat():
@@ -44,6 +42,14 @@ class Gatekeeper:
         if not self._state.is_whitelisted(group_id):
             return False
         return True
+
+    def should_process(
+        self, event: AstrMessageEvent, effective_text: str | None = None
+    ) -> bool:
+        text = event.message_str if effective_text is None else effective_text
+        if not text or text.startswith("/"):
+            return False
+        return self.should_consider_group(event)
 
 
 class SlidingWindow:

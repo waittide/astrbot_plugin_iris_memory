@@ -14,7 +14,11 @@ from .components import (
 )
 from .persona import PersonaResolver, resolve_persona
 from .llm_request_hook import preprocess_llm_request
-from .message_hook import handle_user_message, update_l1_buffer
+from .message_hook import (
+    handle_user_message,
+    update_l1_buffer,
+    extract_event_rich_media,
+)
 from .lifecycle import (
     create_components,
     initialize_components,
@@ -39,6 +43,7 @@ __all__ = [
     "preprocess_llm_request",
     "handle_user_message",
     "update_l1_buffer",
+    "extract_event_rich_media",
     "create_components",
     "initialize_components",
     "shutdown_components",

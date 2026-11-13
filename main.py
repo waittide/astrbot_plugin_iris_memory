@@ -43,6 +43,7 @@ from .iris_memory.core import (
     initialize_components,
     shutdown_components,
     handle_user_message,
+    extract_event_rich_media,
     preprocess_llm_request,
     handle_llm_response,
     handle_agent_done,
@@ -480,11 +481,24 @@ class IrisMemoryPlugin(Star):
         if not self._reply_config.enabled:
             return
 
-        if not self._gatekeeper.should_process(event):
+        if not self._gatekeeper.should_consider_group(event):
             return
 
         group_id = event.get_group_id()
         if not group_id:
+            return
+
+        raw_text = (event.message_str or "").strip()
+        image_caption, forward_text, _ = (
+            await extract_event_rich_media(event, self.component_manager)
+            if self.component_manager
+            else ("", "", None)
+        )
+        message_str = "\n".join(
+            p for p in (" ".join(x for x in (raw_text, image_caption) if x).strip(), forward_text) if p
+        ).strip()
+
+        if not self._gatekeeper.should_process(event, message_str):
             return
 
         # 缓存会话标识与自身 ID，供主动发起通路使用
@@ -495,7 +509,6 @@ class IrisMemoryPlugin(Star):
         if not self._self_id:
             self._self_id = event.get_self_id() or ""
 
-        message_str = event.message_str or ""
         sender_id = event.get_sender_id()
         sender_name = event.get_sender_name() or sender_id
 
@@ -550,6 +563,12 @@ class IrisMemoryPlugin(Star):
 
         event.is_at_or_wake_command = True
         event.is_wake = True
+        if not (event.message_str or "").strip():
+            event.set_extra("iris_fallback_prompt", message_str)
+            try:
+                event.message_str = message_str
+            except Exception:
+                pass
         if provider_id:
             event.set_extra("selected_provider", provider_id)
         self._tool_ctx.set_context(group_id)
@@ -604,6 +623,10 @@ class IrisMemoryPlugin(Star):
 
         # 3. 主动回复发言提示：决策通过后由 _handle_reply_decision 暂存，
         # 在记忆注入之后追加，保证 LLM 先看到上下文、再看到发言指令
+        fallback_prompt = event.get_extra("iris_fallback_prompt")
+        if fallback_prompt and not (req.prompt or "").strip():
+            req.prompt = fallback_prompt
+
         hint = event.get_extra("iris_speak_hint")
         if hint:
             req.extra_user_content_parts.append(TextPart(text=hint).mark_as_temp())
