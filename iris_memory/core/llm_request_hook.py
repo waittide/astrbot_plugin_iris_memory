@@ -26,10 +26,8 @@ req.contexts 和 req.prompt。
 """
 
 import asyncio
-import inspect
 import re
 import time
-import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable
 from typing import TYPE_CHECKING, Any, List, Optional, cast
@@ -37,30 +35,6 @@ from typing import TYPE_CHECKING, Any, List, Optional, cast
 from ..core import get_logger
 from ..core.event_extras import L1_CURRENT_EVENT_RECORD_COUNT
 from ..llm_modules import L2_QUERY_REWRITE
-
-
-async def _claim_pending_images_compat(
-    l1_buffer: Any,
-    session_id: str,
-    limit: int,
-    claim_token: str,
-    stale_after_seconds: float,
-) -> list[Any]:
-    """调用新原子领取接口；仅为旧测试替身保留同步读取兼容。"""
-
-    claim = getattr(l1_buffer, "claim_pending_images", None)
-    if callable(claim):
-        result = claim(
-            session_id,
-            limit,
-            claim_token,
-            stale_after_seconds=stale_after_seconds,
-        )
-        if inspect.isawaitable(result):
-            return list(await result)
-        if isinstance(result, list):
-            return result
-    return list(l1_buffer.get_images(session_id, limit=limit, only_pending=True))
 
 _KG_STOPWORDS = frozenset(
     {
@@ -158,27 +132,6 @@ def _skip_llm_query_rewrite(text: str) -> bool:
         return True
     return False
 
-_IMAGE_QUEUE_TASK_EXTRA = "_iris_image_background_task"
-_IMAGE_BACKGROUND_TASKS: set[asyncio.Task] = set()
-
-
-async def cancel_image_background_tasks() -> None:
-    """取消当前事件循环的关联图片解析兜底任务并等待退出。
-
-    协调器不可用时的兜底路径会把解析任务存入模块级集合；插件卸载时
-    若不取消，任务会在组件 shutdown 之后继续操作已关闭的适配器。
-    """
-    loop = asyncio.get_running_loop()
-    tasks = [
-        task
-        for task in tuple(_IMAGE_BACKGROUND_TASKS)
-        if task.get_loop() is loop and not task.done()
-    ]
-    for task in tasks:
-        task.cancel()
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
-
 if TYPE_CHECKING:
     from astrbot.api.event import AstrMessageEvent
     from astrbot.api.provider import ProviderRequest
@@ -216,16 +169,11 @@ async def preprocess_llm_request(
     # 的结果，以便使用关联节点做图扩展。每个任务内部故障隔离。
     preprocess_started = time.perf_counter()
     inject_meta: dict = {
-        "image": {},
         "l1": {},
         "profile": {},
         "l2": {},
         "l3": {},
     }
-
-    image_started = time.perf_counter()
-    _schedule_related_image_parse(event, req, component_manager, inject_meta["image"])
-    inject_meta["image"]["duration_ms"] = _elapsed_ms(image_started)
 
     user_message = ""
     if hasattr(event, "message_str") and event.message_str:
@@ -322,121 +270,6 @@ async def _run_stage(
         meta["duration_ms"] = _elapsed_ms(started)
 
 
-def _schedule_related_image_parse(
-    event: "AstrMessageEvent",
-    req: "ProviderRequest",
-    component_manager: "ComponentManager",
-    meta: dict,
-) -> None:
-    """将 related 模式图片解析移到后台，当前 LLM 请求不等待结果。"""
-    try:
-        from ..config import get_config
-
-        config = get_config()
-        if not config.get("l1_buffer.image_parsing.enable"):
-            meta["skipped"] = "disabled"
-            return
-        if config.get("l1_buffer.image_parsing.mode", "related") != "related":
-            meta["skipped"] = "not_related_mode"
-            return
-
-        parse_fn = _parse_images_if_related_mode
-        queue_task = None
-        try:
-            candidate = event.get_extra(_IMAGE_QUEUE_TASK_EXTRA)
-            if isinstance(candidate, (asyncio.Future, asyncio.Event)):
-                queue_task = candidate
-        except Exception:
-            pass
-
-        async def runner(*, wait_for_queue: bool = True) -> None:
-            started = time.perf_counter()
-            error = ""
-            try:
-                if wait_for_queue and queue_task is not None:
-                    # 下载/入队也在后台。先等它完成，避免 related
-                    # 解析与入队竞态，但不阻塞当前回复。
-                    if isinstance(queue_task, asyncio.Event):
-                        await queue_task.wait()
-                    else:
-                        await asyncio.shield(queue_task)
-                await parse_fn(event, req, component_manager)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                error = str(exc)
-                logger.error(f"后台图片解析失败，已隔离：{exc}", exc_info=True)
-            finally:
-                duration_ms = _elapsed_ms(started)
-                logger.info("后台图片解析完成：duration=%.1fms", duration_ms)
-                _record_background_image_timing(
-                    event,
-                    operation="related_parse",
-                    duration_ms=duration_ms,
-                    error=error,
-                )
-
-        from ..image import ImageParseCoordinator
-        from ..platform import get_adapter
-
-        coordinator = component_manager.get_available_component("image_coordinator")
-        if isinstance(coordinator, ImageParseCoordinator):
-            adapter = get_adapter(event)
-            session_id = adapter.get_session_id(event)
-            raw = adapter.get_raw_message(event) or {}
-            message_id = str(raw.get("message_id") or id(event))
-            completion = coordinator.submit(
-                key=f"related:{session_id}:{message_id}",
-                session_id=session_id,
-                runner=lambda: runner(wait_for_queue=False),
-                dependency=queue_task,
-            )
-            if completion is None:
-                meta["skipped"] = "image_queue_backpressure"
-                return
-            meta["background_scheduled"] = True
-            meta["blocking"] = False
-            return
-
-        task = asyncio.create_task(runner(), name="iris-related-image-parse")
-        _IMAGE_BACKGROUND_TASKS.add(task)
-        task.add_done_callback(_IMAGE_BACKGROUND_TASKS.discard)
-        meta["background_scheduled"] = True
-        meta["blocking"] = False
-    except Exception as exc:
-        meta["error"] = str(exc)
-        logger.error(f"调度后台图片解析失败：{exc}", exc_info=True)
-
-
-def _record_background_image_timing(
-    event: "AstrMessageEvent",
-    *,
-    operation: str,
-    duration_ms: float,
-    error: str = "",
-) -> None:
-    """记录不在当前注入链内完成的图片阶段耗时。"""
-    try:
-        from ..core.run_log import get_run_log_manager
-        from ..platform import get_adapter
-
-        adapter = get_adapter(event)
-        get_run_log_manager().record(
-            "injection",
-            f"后台图片处理{'失败' if error else '完成'}",
-            success=not error,
-            group_id=adapter.get_group_id(event) or "",
-            session_id=adapter.get_session_id(event) or "",
-            stage="image",
-            operation=operation,
-            blocking=False,
-            duration_ms=round(duration_ms, 2),
-            error=error,
-        )
-    except Exception as exc:
-        logger.debug(f"后台图片耗时日志记录失败（已忽略）：{exc}")
-
-
 def _record_injection_log(
     event: "AstrMessageEvent",
     req: "ProviderRequest",
@@ -473,10 +306,6 @@ def _record_injection_log(
         }
         injected_count = sum(1 for s in sections.values() if s["injected"])
 
-        image_meta = getattr(req, "_iris_image_meta", None)
-        if not isinstance(image_meta, dict):
-            image_meta = None
-
         if injected_count:
             title = f"注入 {injected_count} 个 section（共 {len(combined)} 字符）"
         else:
@@ -492,10 +321,9 @@ def _record_injection_log(
             injected_sections=injected_count,
             total_chars=len(combined),
             sections=sections,
-            image=image_meta,
             stage_timings_ms={
                 stage: round(float(meta.get(stage, {}).get("duration_ms", 0.0)), 2)
-                for stage in ("image", "l1", "profile", "l2", "l3")
+                for stage in ("l1", "profile", "l2", "l3")
             },
             total_duration_ms=round(total_duration_ms, 2),
             content=combined,
@@ -546,102 +374,6 @@ def _inject_to_extra_user_content_parts(
     req.extra_user_content_parts.append(text_part)
 
     return combined
-
-
-async def _build_image_map(
-    l1_buffer: "L1Buffer",
-    group_id: str,
-    component_manager: "ComponentManager",
-) -> dict:
-    """构建图片解析结果映射表
-
-    从 L1 Buffer 图片队列和缓存中获取已解析的图片内容，
-    按 message_id 和时间窗口关联到对应的消息。
-
-    Args:
-        l1_buffer: L1 Buffer 实例
-        group_id: 群聊 ID
-        component_manager: 组件管理器实例
-
-    Returns:
-        映射表，key 为 message_id 或 (user_id, timestamp_window)，value为图片描述列表
-    """
-    from ..image import ImageParseStatus
-
-    cache_manager = component_manager.get_component("image_cache")
-
-    all_images = l1_buffer.get_images(group_id, only_pending=False)
-    if not all_images:
-        return {}
-
-    image_map: dict[str, list[str]] = {}
-
-    for img_item in all_images:
-        if img_item.status != ImageParseStatus.SUCCESS:
-            continue
-
-        desc: Optional[str] = None
-
-        if cache_manager and cache_manager.is_available:
-            cached = await cache_manager.get_cache(img_item.image_hash)
-            if cached and cached.content:
-                desc = cached.content
-
-        if not desc:
-            continue
-
-        if img_item.message_id:
-            key = img_item.message_id
-        else:
-            ts = img_item.timestamp
-            key = f"{img_item.user_id}:{ts.hour}:{ts.minute}"
-
-        if key not in image_map:
-            image_map[key] = []
-        image_map[key].append(desc)
-
-    return image_map
-
-
-def _get_inline_image_desc(
-    msg: "ContextMessage",
-    msg_id: Optional[str],
-    image_map: dict,
-) -> str:
-    """获取消息的行内图片描述
-
-    根据消息 ID 或时间窗口匹配图片解析结果，
-    返回行内格式的图片描述文本。
-
-    Args:
-        msg: 上下文消息
-        msg_id: 消息 ID
-        image_map: 图片映射表
-
-    Returns:
-        行内图片描述，如 " [图:一只猫的照片]"，无匹配时返回空字符串
-    """
-    if not image_map:
-        return ""
-
-    descs: Optional[list[str]] = None
-
-    if msg_id and msg_id in image_map:
-        descs = image_map[msg_id]
-    else:
-        ts = msg.timestamp
-        source = msg.source
-        key = f"{source}:{ts.hour}:{ts.minute}"
-        descs = image_map.get(key)
-
-    if not descs:
-        return ""
-
-    if len(descs) == 1:
-        return f" [图:{descs[0]}]"
-
-    parts = "；".join(descs)
-    return f" [图:{parts}]"
 
 
 async def _collect_l1_context(
@@ -730,17 +462,13 @@ async def _collect_l1_context(
         lines.append("【近期群聊记录】")
         lines.append(
             "以下是群里最近的对话，帮助你了解当前话题。"
-            "消息按从旧到新排列，越靠下越接近当前对话。"
-            "其中 [图] 标记为对话中发送的图片的辅助描述，"
-            "仅用于辅助理解对话内容："
+            "消息按从旧到新排列，越靠下越接近当前对话："
         )
     else:
         lines.append("【近期对话记录】")
         lines.append(
             "以下是你们最近的对话。"
-            "消息按从旧到新排列，越靠下越接近当前对话。"
-            "其中 [图] 标记为对话中发送的图片的辅助描述，"
-            "仅用于辅助理解对话内容："
+            "消息按从旧到新排列，越靠下越接近当前对话："
         )
 
     lines.append("← 较早")
@@ -1434,277 +1162,6 @@ def _format_profiles_for_injection(
         sections.append("\n".join(group_parts))
 
     return "\n\n".join(sections) if sections else ""
-
-
-def _is_passive_trigger(event: "AstrMessageEvent") -> bool:
-    """检查当前 LLM 请求是否为被动触发（sampling/主动回复）
-
-    通过检查 event extras 中的 iris_passive_trigger 标志判断。
-    该标志由 main.py 中的 _detect_passive_trigger() 设置，
-    其依据是 event.is_at_or_wake_command 是否为 False。
-
-    被动触发时，用户未通过 @机器人 或唤醒前缀主动请求，LLM 请求由 AstrBot 的
-    active_reply/sampling 机制触发。此时图片解析是不必要的，
-    跳过可节省 token 和配额。
-
-    Args:
-        event: AstrBot 消息事件对象
-
-    Returns:
-        True 表示被动触发，应跳过图片解析
-    """
-    try:
-        if hasattr(event, "get_extra"):
-            return bool(event.get_extra("iris_passive_trigger"))
-    except Exception:
-        pass
-    return False
-
-
-async def _parse_images_if_related_mode(
-    event: "AstrMessageEvent",
-    req: "ProviderRequest",
-    component_manager: "ComponentManager",
-) -> None:
-    """解析图片并替换 L1 消息中的占位符（related 模式）
-
-    仅在 related 模式下解析 L1 Buffer 范围内的图片。
-    all 模式已在消息钩子中处理。
-
-    流程：
-    1. 获取 L1Buffer 图片队列中的待解析图片
-    2. 检查缓存，命中则直接替换占位符
-    3. 批量解析（并发控制、数量限制）
-    4. 结果存入缓存
-    5. 替换 L1 消息中的 [IMG:xxx] 占位符为 [图:描述]
-
-    Args:
-        event: AstrBot 消息事件对象
-        req: LLM 提供者请求对象
-        component_manager: 组件管理器实例
-    """
-    from ..config import get_config
-    from ..platform import get_adapter
-    from ..image import ImageParser, ImageParseStatus, ImageParseCache
-    import asyncio
-
-    config = get_config()
-    if not config.get("l1_buffer.image_parsing.enable"):
-        return
-
-    if config.get("image_skip_on_passive_trigger", True):
-        if _is_passive_trigger(event):
-            logger.info("被动触发（sampling/主动回复），跳过图片解析以节省 token")
-            req._iris_image_meta = {"skipped": "passive_trigger"}
-            return
-
-    mode = config.get("l1_buffer.image_parsing.mode", "related")
-
-    if mode == "all":
-        return
-
-    if mode != "related":
-        logger.warning(f"未知的图片解析模式：{mode}")
-        return
-
-    adapter = get_adapter(event)
-    session_id = adapter.get_session_id(event)
-
-    buffer = component_manager.get_available_component("l1_buffer")
-    if not buffer:
-        return
-
-    l1_buffer = cast("L1Buffer", buffer)
-
-    cache_manager = component_manager.get_available_component("image_cache")
-    quota_manager = component_manager.get_available_component("image_quota")
-    llm_manager = component_manager.get_available_component("llm_manager")
-
-    if not llm_manager:
-        logger.warning("LLM Manager 不可用，跳过图片解析")
-        return
-
-    max_parse = int(config.get("image_max_parse_per_request", 3) or 3)
-    max_concurrent = int(config.get("image_max_concurrent_parse", 2) or 2)
-    parse_timeout_ms = cast(int, config.get("image_parse_timeout_ms", 30000))
-    claim_token = str(uuid.uuid4())
-    pending_images = await _claim_pending_images_compat(
-        l1_buffer,
-        session_id,
-        max_parse,
-        claim_token,
-        max(1.0, parse_timeout_ms * 2 / 1000.0),
-    )
-
-    if not pending_images:
-        return
-
-    images_to_parse = []
-    cached_results = []
-
-    for img_item in pending_images:
-        if cache_manager and cache_manager.is_available:
-            cached = await cache_manager.get_cache(img_item.image_hash)
-            if cached:
-                l1_buffer.mark_image_parsed(
-                    session_id,
-                    img_item.image_hash,
-                    ImageParseStatus.SUCCESS,
-                    claim_token,
-                )
-                placeholder = f"[IMG:{img_item.image_hash.removeprefix('ph:')[:12]}]"
-                l1_buffer.replace_image_placeholder(
-                    session_id, placeholder, f"[图:{cached.content}]"
-                )
-                cached_results.append((img_item, cached))
-                continue
-
-        images_to_parse.append(img_item)
-
-    if cached_results:
-        logger.debug(f"从缓存读取 {len(cached_results)} 条图片解析结果并替换占位符")
-
-    if not images_to_parse:
-        total_cached = len(cached_results)
-        if total_cached > 0:
-            logger.info(f"已从缓存获取 {total_cached} 条图片解析结果并替换占位符")
-        return
-
-    if quota_manager and quota_manager.is_available:
-        has_quota = await quota_manager.check_quota()
-        if not has_quota:
-            logger.info("图片解析配额已耗尽，跳过解析")
-            req._iris_image_meta = {"skipped": "quota_exhausted"}
-            for item in images_to_parse:
-                l1_buffer.release_image_claim(
-                    session_id, item.image_hash, claim_token, deferred=True
-                )
-            return
-
-        quota_used = await quota_manager.use_quota(len(images_to_parse))
-        if not quota_used:
-            logger.warning("图片解析配额使用失败")
-            for item in images_to_parse:
-                l1_buffer.release_image_claim(
-                    session_id, item.image_hash, claim_token, deferred=True
-                )
-            return
-
-    provider = config.get("l1_buffer.image_parsing.provider", "")
-
-    from ..image.recorder_bridge import get_recorder_bridge
-
-    parser = ImageParser(llm_manager, provider, recorder_bridge=get_recorder_bridge())
-
-    logger.info(f"开始解析 {len(images_to_parse)} 张图片（related 模式）")
-
-    semaphore = asyncio.Semaphore(max_concurrent)
-
-    async def parse_with_semaphore(img_item):
-        async with semaphore:
-            if not img_item.image_info or not img_item.image_info.has_url:
-                return (img_item, None)
-            result = await parser.parse(
-                img_item.image_info, image_hash=img_item.image_hash
-            )
-            return (img_item, result)
-
-    task_to_img: dict = {}
-    for img in images_to_parse:
-        task_to_img[asyncio.ensure_future(parse_with_semaphore(img))] = img
-
-    if parse_timeout_ms and parse_timeout_ms > 0:
-        done, pending = await asyncio.wait(
-            task_to_img, timeout=parse_timeout_ms / 1000.0
-        )
-    else:
-        done, pending = await asyncio.wait(task_to_img)
-
-    if pending:
-        for t in pending:
-            t.cancel()
-            img_item = task_to_img[t]
-            l1_buffer.mark_image_parsed(
-                session_id, img_item.image_hash, ImageParseStatus.FAILED, claim_token
-            )
-            placeholder = f"[IMG:{img_item.image_hash.removeprefix('ph:')[:12]}]"
-            l1_buffer.replace_image_placeholder(session_id, placeholder, "")
-        logger.warning(
-            f"图片解析整体超时（{parse_timeout_ms}ms），"
-            f"{len(pending)}/{len(images_to_parse)} 张未完成，已标记失败"
-        )
-        # 等待被取消的任务真正结束，避免任务泄漏与 "Task was destroyed but
-        # it is pending" 警告，并确保 parse_with_semaphore 内的 httpx 连接等资源被回收
-        await asyncio.gather(*pending, return_exceptions=True)
-
-    parse_results = [t.result() for t in done]
-
-    success_count = 0
-    for img_item, result in parse_results:
-        if result is None:
-            l1_buffer.mark_image_parsed(
-                session_id, img_item.image_hash, ImageParseStatus.FAILED, claim_token
-            )
-            placeholder = f"[IMG:{img_item.image_hash.removeprefix('ph:')[:12]}]"
-            l1_buffer.replace_image_placeholder(session_id, placeholder, "")
-            continue
-
-        if not result.success:
-            logger.warning(f"图片解析失败：{result.error_message}")
-            l1_buffer.mark_image_parsed(
-                session_id, img_item.image_hash, ImageParseStatus.FAILED, claim_token
-            )
-            placeholder = f"[IMG:{img_item.image_hash.removeprefix('ph:')[:12]}]"
-            l1_buffer.replace_image_placeholder(session_id, placeholder, "")
-            continue
-
-        if not result.content:
-            logger.debug("图片解析结果为空")
-            l1_buffer.mark_image_parsed(
-                session_id, img_item.image_hash, ImageParseStatus.FAILED, claim_token
-            )
-            placeholder = f"[IMG:{img_item.image_hash.removeprefix('ph:')[:12]}]"
-            l1_buffer.replace_image_placeholder(session_id, placeholder, "")
-            continue
-
-        if cache_manager and cache_manager.is_available:
-            cache = ImageParseCache(
-                image_hash=img_item.image_hash,
-                content=result.content,
-                input_tokens=result.input_tokens,
-                output_tokens=result.output_tokens,
-            )
-            await cache_manager.set_cache(cache)
-
-        l1_buffer.mark_image_parsed(
-            session_id, img_item.image_hash, ImageParseStatus.SUCCESS, claim_token
-        )
-
-        placeholder = f"[IMG:{img_item.image_hash.removeprefix('ph:')[:12]}]"
-        l1_buffer.replace_image_placeholder(
-            session_id, placeholder, f"[图:{result.content}]"
-        )
-
-        success_count += 1
-
-    # 退还解析失败/跳过/超时的预扣配额，避免静默耗尽
-    if quota_manager and quota_manager.is_available:
-        failed_count = len(images_to_parse) - success_count
-        if failed_count > 0:
-            await quota_manager.release_quota(failed_count)
-
-    total_replaced = success_count + len(cached_results)
-    req._iris_image_meta = {
-        "mode": "related",
-        "parsed": success_count,
-        "cached": len(cached_results),
-        "failed": len(images_to_parse) - success_count,
-    }
-    if total_replaced > 0:
-        logger.info(
-            f"已解析 {success_count} 张新图片，缓存 {len(cached_results)} 张，"
-            f"共 {total_replaced} 条图片解析结果已替换占位符"
-        )
 
 
 def _log_final_context(req: "ProviderRequest") -> None:

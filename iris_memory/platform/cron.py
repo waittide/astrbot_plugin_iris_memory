@@ -24,7 +24,6 @@ from ..platform.base import PlatformAdapter, ReplyInfo
 
 if TYPE_CHECKING:
     from astrbot.api.event import AstrMessageEvent
-    from ..image.models import ImageInfo
 
 logger = get_logger("platform.cron")
 
@@ -235,9 +234,6 @@ class CronAdapter(PlatformAdapter):
             return bool(group_id)
         except Exception:
             return False
-
-    def get_images(self, event: Any) -> List["ImageInfo"]:
-        return []
 
     def get_reply_info(self, event: Any) -> ReplyInfo:
         return ReplyInfo()

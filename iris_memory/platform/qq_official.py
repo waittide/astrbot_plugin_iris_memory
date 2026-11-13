@@ -25,14 +25,13 @@ Iris Chat Memory - QQ 官方机器人平台适配器
 import asyncio
 from typing import Any, List, TYPE_CHECKING
 
-from astrbot.api.message_components import At, Image, Plain, Reply
+from astrbot.api.message_components import At, Plain, Reply
 
 from ..core import get_logger
 from ..platform.base import PlatformAdapter, ReplyInfo
 
 if TYPE_CHECKING:
     from astrbot.api.event import AstrMessageEvent
-    from ..image.models import ImageInfo
 
 logger = get_logger("platform.qq_official")
 
@@ -346,81 +345,6 @@ class QQOfficialAdapter(PlatformAdapter):
     # ------------------------------------------------------------------
     # 消息链提取
     # ------------------------------------------------------------------
-
-    def get_images(self, event: Any) -> List["ImageInfo"]:
-        """获取消息中的图片列表
-
-        从消息链提取 Image 组件（AstrBot 已把附件归一化为 https URL），
-        包括当前消息与引用消息（Reply.chain）内的图片。
-
-        Args:
-            event: AstrBot 消息事件对象
-
-        Returns:
-            图片信息列表
-        """
-        from ..image.models import ImageInfo
-
-        images: List["ImageInfo"] = []
-        message_id = self._clean_id(getattr(event.message_obj, "message_id", None))
-
-        try:
-            for component in self._get_chain(event):
-                if isinstance(component, Reply):
-                    for sub in component.chain or []:
-                        if isinstance(sub, Image):
-                            info = self._image_info_from_component(
-                                sub, "forward", message_id
-                            )
-                            if info:
-                                images.append(info)
-                elif isinstance(component, Image):
-                    info = self._image_info_from_component(
-                        component, "user", message_id
-                    )
-                    if info:
-                        images.append(info)
-        except Exception as e:
-            logger.error(f"提取图片信息失败: {e}")
-            return images
-
-        if images:
-            logger.debug(f"从消息中提取到 {len(images)} 张图片")
-        return images
-
-    def _image_info_from_component(
-        self, component: Any, source: str, message_id: str
-    ) -> "ImageInfo | None":
-        """把链上 Image 组件转为 ImageInfo（url 缺失时返回 None）"""
-        from ..image.models import ImageInfo
-
-        url = str(getattr(component, "url", None) or getattr(component, "file", None) or "")
-        if not url:
-            return None
-        return ImageInfo(
-            url=url,
-            file_path=url,
-            format=self._detect_image_format(url),
-            size_kb=0,
-            source=source,
-            message_id=message_id,
-        )
-
-    @staticmethod
-    def _detect_image_format(url: str) -> str:
-        """从 URL 推断图片格式（jpg/jpeg/png/gif/webp）"""
-        if not url:
-            return ""
-        url_lower = url.lower()
-        if ".jpg" in url_lower or ".jpeg" in url_lower:
-            return "jpg"
-        if ".png" in url_lower:
-            return "png"
-        if ".gif" in url_lower:
-            return "gif"
-        if ".webp" in url_lower:
-            return "webp"
-        return ""
 
     def get_reply_info(self, event: Any) -> ReplyInfo:
         """获取回复/引用消息的关联信息

@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from astrbot.api.event import AstrMessageEvent
-    from ..image.models import ImageInfo
 
 
 @dataclass
@@ -277,33 +276,6 @@ class PlatformAdapter(ABC):
         Examples:
             >>> if adapter.is_group_message(event):
             ...     print("这是群聊消息")
-        """
-        pass
-
-    @abstractmethod
-    def get_images(self, event: "AstrMessageEvent") -> list["ImageInfo"]:
-        """获取消息中的图片列表
-
-        从消息事件中提取所有图片信息（包括当前消息和引用消息）。
-
-        Args:
-            event: AstrBot 消息事件对象 (AstrMessageEvent)
-
-        Returns:
-            图片信息列表，无图片时返回空列表
-
-        Raises:
-            AttributeError: event 结构不符合预期
-
-        Examples:
-            >>> images = adapter.get_images(event)
-            >>> for img in images:
-            ...     print(f"图片URL: {img.url}")
-
-        Notes:
-            - 不同平台的图片提取方式不同
-            - OneBot11：从消息段中提取 [CQ:image,...]
-            - 返回的 ImageInfo 可能只包含 url 或 file_path，需要后续验证
         """
         pass
 

@@ -3,7 +3,6 @@
 L1_SUMMARIZER = "l1_summarizer"
 L2_QUERY_REWRITE = "l2_query_rewrite"
 L3_KG_EXTRACTION = "l3_kg_extraction"
-IMAGE_PARSING = "image_parsing"
 PROFILE_ANALYSIS = "profile_analysis"
 PROACTIVE_DECISION_CHIME_IN = "proactive_decision_chime_in"
 PROACTIVE_DECISION_FOLLOW_UP = "proactive_decision_follow_up"

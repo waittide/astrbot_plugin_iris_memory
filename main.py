@@ -147,10 +147,6 @@ class IrisMemoryPlugin(Star):
 
             set_component_manager(self.component_manager)
 
-            from .iris_memory.image.recorder_bridge import init_recorder_bridge
-
-            init_recorder_bridge(context)
-
             # ── 主动回复侧初始化 ──
             self._reply_config = ReplyConfigManager(
                 config if config else context.get_config(),

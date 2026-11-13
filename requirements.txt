@@ -1,8 +1,2 @@
 # Token 计数
 tiktoken>=0.5.0
-
-# 图片处理（pHash 去重 + 无效图过滤）
-Pillow>=10.0.0
-
-# HTTP 客户端（图片 URL 可达性检查）
-httpx>=0.24.0

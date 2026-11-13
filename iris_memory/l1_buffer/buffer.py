@@ -91,8 +91,6 @@ class L1Buffer(Component):
     def __init__(self):
         super().__init__()
         self._queues: Dict[str, SegmentedMessageQueue] = {}
-        self._image_queues: Dict[str, List[Any]] = {}
-        self._image_queue_lock = asyncio.Lock()
         self._summarizer: Optional[Summarizer] = None
         self._component_manager: Optional["ComponentManager"] = None
         self._provider: str = ""
@@ -194,33 +192,9 @@ class L1Buffer(Component):
                 else:
                     queue.segment_1.append(message)
                 queue.total_tokens += message.token_count
-        try:
-            image_snapshot = self._store.load_images()
-        except Exception as e:
-            logger.error(f"L1 图片队列还原失败：{e}")
-            image_snapshot = {}
 
-        from ..image import ImageQueueItem
-
-        restored_images = 0
-        for queue_key, items in image_snapshot.items():
-            restored = []
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                try:
-                    restored.append(ImageQueueItem.from_dict(item))
-                except Exception:
-                    continue
-            if restored:
-                self._image_queues[queue_key] = restored
-                restored_images += len(restored)
-
-        if snapshot or restored_images:
-            logger.info(
-                f"已从磁盘还原 {len(snapshot)} 个会话的 L1 消息队列、"
-                f"{restored_images} 张待处理图片"
-            )
+        if snapshot:
+            logger.info(f"已从磁盘还原 {len(snapshot)} 个会话的 L1 消息队列")
 
     def set_component_manager(self, manager: "ComponentManager") -> None:
         self._component_manager = manager
@@ -485,14 +459,11 @@ class L1Buffer(Component):
             self._dirty_queues.clear()
             for queue_key in pending:
                 queue = self._queues.get(queue_key)
-                images = self._image_queues.get(queue_key, [])
                 try:
-                    if queue is None and not images:
+                    if queue is None:
                         await asyncio.to_thread(self._store.delete, queue_key)
                         continue
-                    if queue is not None:
-                        await asyncio.to_thread(self._store.save, queue_key, queue)
-                    await asyncio.to_thread(self._store.save_images, queue_key, images)
+                    await asyncio.to_thread(self._store.save, queue_key, queue)
                 except Exception as e:
                     self._dirty_queues.add(queue_key)
                     logger.warning(f"L1 队列落盘失败，稍后重试：{queue_key}, {e}")
@@ -533,17 +504,11 @@ class L1Buffer(Component):
     def clear_all(self) -> int:
         total_messages = sum(len(q) for q in self._queues.values())
         queue_keys = list(self._queues)
-        # 收集所有图片项用于清理缓存文件
-        all_image_items: list[Any] = []
-        for img_list in self._image_queues.values():
-            all_image_items.extend(img_list)
         self._queues.clear()
-        self._image_queues.clear()
         self._summarizing_locks.clear()
         if self._summary_work_queue:
             for queue_key in queue_keys:
                 self._summary_work_queue.discard(queue_key)
-        self._cleanup_image_cache_files(all_image_items)
         if self._store and queue_keys:
             self._dirty_queues.clear()
             try:
@@ -587,7 +552,6 @@ class L1Buffer(Component):
             old_size = len(queue)
             queue.clear()
             logger.info(f"已清空队列：{queue_key}，原 {old_size} 条消息")
-            self.clear_images_for_queue(group_id)
             self._summarizing_locks.pop(queue_key, None)
             if self._summary_work_queue:
                 self._summary_work_queue.discard(queue_key)
@@ -702,8 +666,7 @@ class L1Buffer(Component):
                             f"队列 {queue_key} 总结连续失败 {fail_count} 次，"
                             f"清除 L1-2 段（可能包含审核不通过的消息）"
                         )
-                        removed = queue.clear_segment_2()
-                        self._clear_images_for_summarized_messages(queue_key, removed)
+                        queue.clear_segment_2()
                         self._summary_fail_counts[queue_key] = 0
                         self._mark_queue_dirty(queue_key)
                     else:
@@ -717,7 +680,6 @@ class L1Buffer(Component):
                     return
 
                 queue.rotate_after_summary(summarized_messages=target_messages)
-                self._clear_images_for_summarized_messages(queue_key, target_messages)
                 self._mark_queue_dirty(queue_key)
 
                 logger.info(
@@ -738,8 +700,7 @@ class L1Buffer(Component):
                         f"清除 L1-2 段（可能包含审核不通过的消息）"
                     )
                     if queue_key in self._queues:
-                        removed = queue.clear_segment_2()
-                        self._clear_images_for_summarized_messages(queue_key, removed)
+                        queue.clear_segment_2()
                         self._mark_queue_dirty(queue_key)
                     self._summary_fail_counts[queue_key] = 0
 
@@ -1761,334 +1722,3 @@ class L1Buffer(Component):
         )
         self._mark_queue_dirty(queue_key)
         return True
-
-    def replace_image_placeholder(
-        self, group_id: str, placeholder: str, description: str
-    ) -> bool:
-        if not self._is_available:
-            return False
-
-        queue_key = self._get_queue_key(group_id)
-        if queue_key not in self._queues:
-            return False
-
-        queue = self._queues[queue_key]
-        replaced = False
-
-        for msg in queue.all_messages:
-            if placeholder in msg.content:
-                old_tokens = msg.token_count
-                msg.content = msg.content.replace(placeholder, description)
-                msg.token_count = count_tokens(msg.content)
-
-                token_diff = msg.token_count - old_tokens
-                queue.total_tokens += token_diff
-
-                replaced = True
-                logger.debug(
-                    f"已替换图片占位符：{queue_key}, "
-                    f"{placeholder} -> {description[:30]}..."
-                )
-
-        if replaced:
-            self._mark_queue_dirty(queue_key)
-        return replaced
-
-    def add_image(self, group_id: str, image_item: Any) -> None:
-        queue_key = self._get_queue_key(group_id)
-
-        if queue_key not in self._image_queues:
-            self._image_queues[queue_key] = []
-
-        self._image_queues[queue_key].append(image_item)
-        self._mark_queue_dirty(queue_key)
-        logger.debug(
-            f"图片已入队：{queue_key}, hash={image_item.image_hash[:8]}..., "
-            f"队列大小={len(self._image_queues[queue_key])}"
-        )
-
-    def get_images(
-        self, group_id: str, limit: Optional[int] = None, only_pending: bool = True
-    ) -> List[Any]:
-        queue_key = self._get_queue_key(group_id)
-
-        if queue_key not in self._image_queues:
-            return []
-
-        images = self._image_queues[queue_key]
-
-        if only_pending:
-            from ..image import ImageParseStatus
-
-            images = [img for img in images if img.status == ImageParseStatus.PENDING]
-
-        if limit is not None:
-            images = images[:limit]
-
-        return images
-
-    async def claim_pending_images(
-        self,
-        group_id: str,
-        limit: int,
-        claim_token: str,
-        *,
-        stale_after_seconds: float = 60.0,
-    ) -> List[Any]:
-        """原子领取待解析图片，并回收超时的 PROCESSING 项。"""
-
-        from ..image import ImageParseStatus
-
-        if not claim_token or limit <= 0:
-            return []
-        queue_key = self._get_queue_key(group_id)
-        async with self._image_queue_lock:
-            images = self._image_queues.get(queue_key, [])
-            now = datetime.now()
-            for image in images:
-                if (
-                    image.status == ImageParseStatus.PROCESSING
-                    and image.claimed_at is not None
-                    and (now - image.claimed_at).total_seconds()
-                    >= max(1.0, stale_after_seconds)
-                ):
-                    image.status = ImageParseStatus.PENDING
-                    image.claim_token = ""
-                    image.claimed_at = None
-
-            claimed: List[Any] = []
-            for image in images:
-                if image.status not in (
-                    ImageParseStatus.PENDING,
-                    ImageParseStatus.DEFERRED,
-                ):
-                    continue
-                if image.next_attempt_at and image.next_attempt_at > now:
-                    continue
-                image.status = ImageParseStatus.PROCESSING
-                image.claim_token = claim_token
-                image.claimed_at = now
-                image.attempt_count = int(image.attempt_count or 0) + 1
-                claimed.append(image)
-                if len(claimed) >= limit:
-                    break
-            return claimed
-
-    def mark_image_parsed(
-        self,
-        group_id: str,
-        image_hash: str,
-        status: Any,
-        claim_token: str = "",
-    ) -> bool:
-        from ..image import ImageParseStatus
-
-        queue_key = self._get_queue_key(group_id)
-
-        if queue_key not in self._image_queues:
-            return False
-
-        for img in self._image_queues[queue_key]:
-            if img.image_hash == image_hash:
-                if claim_token and img.claim_token != claim_token:
-                    logger.warning(
-                        f"忽略非持有者图片回写：{queue_key}, hash={image_hash[:8]}"
-                    )
-                    return False
-                img.status = status
-                if status != ImageParseStatus.PROCESSING:
-                    img.claim_token = ""
-                    img.claimed_at = None
-                self._mark_queue_dirty(queue_key)
-                logger.debug(
-                    f"图片状态已更新：{queue_key}, hash={image_hash[:8]}..., "
-                    f"status={status.value}"
-                )
-                return True
-
-        return False
-
-    def release_image_claim(
-        self,
-        group_id: str,
-        image_hash: str,
-        claim_token: str,
-        *,
-        deferred: bool = False,
-        next_attempt_at: Optional[datetime] = None,
-    ) -> bool:
-        """仅由当前持有者释放领取，供配额不足/可重试失败使用。"""
-
-        from ..image import ImageParseStatus
-
-        queue_key = self._get_queue_key(group_id)
-        for img in self._image_queues.get(queue_key, []):
-            if img.image_hash != image_hash or img.claim_token != claim_token:
-                continue
-            img.status = (
-                ImageParseStatus.DEFERRED if deferred else ImageParseStatus.PENDING
-            )
-            img.claim_token = ""
-            img.claimed_at = None
-            img.next_attempt_at = next_attempt_at
-            self._mark_queue_dirty(queue_key)
-            return True
-        return False
-
-    def clear_images_for_message(self, group_id: str, message_id: str) -> int:
-        queue_key = self._get_queue_key(group_id)
-
-        if queue_key not in self._image_queues:
-            return 0
-
-        original_count = len(self._image_queues[queue_key])
-        removed_items = [
-            img for img in self._image_queues[queue_key] if img.message_id == message_id
-        ]
-        self._image_queues[queue_key] = [
-            img for img in self._image_queues[queue_key] if img.message_id != message_id
-        ]
-
-        removed_count = original_count - len(self._image_queues[queue_key])
-        if removed_count > 0:
-            self._cleanup_image_cache_files(removed_items)
-            self._mark_queue_dirty(queue_key)
-            logger.debug(f"已清理消息 {message_id} 的 {removed_count} 张图片")
-
-        return removed_count
-
-    def clear_images_for_queue(self, group_id: str) -> int:
-        queue_key = self._get_queue_key(group_id)
-
-        if queue_key not in self._image_queues:
-            return 0
-
-        removed_items = list(self._image_queues[queue_key])
-        removed_count = len(removed_items)
-        del self._image_queues[queue_key]
-
-        if removed_count > 0:
-            self._cleanup_image_cache_files(removed_items)
-            self._mark_queue_dirty(queue_key)
-            logger.debug(f"已清理队列 {queue_key} 的 {removed_count} 张图片")
-
-        return removed_count
-
-    def get_all_phash_hashes(self) -> list[str]:
-        """获取所有队列中 pHash 格式的图片哈希列表
-
-        用于跨队列 pHash 去重检查。
-
-        Returns:
-            所有以 'ph:' 开头的图片哈希列表
-        """
-        hashes: list[str] = []
-        for img_list in self._image_queues.values():
-            for img in img_list:
-                if img.image_hash.startswith("ph:"):
-                    hashes.append(img.image_hash)
-        return hashes
-
-    def get_image_stats(self, group_id: str) -> Optional[Dict[str, Any]]:
-        queue_key = self._get_queue_key(group_id)
-
-        if queue_key not in self._image_queues:
-            return None
-
-        from ..image import ImageParseStatus
-
-        images = self._image_queues[queue_key]
-        pending_count = sum(
-            1 for img in images if img.status == ImageParseStatus.PENDING
-        )
-        success_count = sum(
-            1 for img in images if img.status == ImageParseStatus.SUCCESS
-        )
-        failed_count = sum(1 for img in images if img.status == ImageParseStatus.FAILED)
-        processing_count = sum(
-            1 for img in images if img.status == ImageParseStatus.PROCESSING
-        )
-        deferred_count = sum(
-            1 for img in images if img.status == ImageParseStatus.DEFERRED
-        )
-
-        return {
-            "group_id": queue_key,
-            "total_count": len(images),
-            "pending_count": pending_count,
-            "success_count": success_count,
-            "failed_count": failed_count,
-            "processing_count": processing_count,
-            "deferred_count": deferred_count,
-        }
-
-    def _clear_images_for_summarized_messages(
-        self, queue_key: str, messages: list[ContextMessage]
-    ) -> int:
-        if queue_key not in self._image_queues:
-            return 0
-
-        message_ids = set()
-        for msg in messages:
-            msg_id = msg.metadata.get("message_id")
-            if msg_id:
-                message_ids.add(msg_id)
-
-        if not message_ids:
-            return 0
-
-        original_count = len(self._image_queues[queue_key])
-        removed_items = [
-            img
-            for img in self._image_queues[queue_key]
-            if img.message_id in message_ids
-        ]
-        self._image_queues[queue_key] = [
-            img
-            for img in self._image_queues[queue_key]
-            if img.message_id not in message_ids
-        ]
-
-        removed_count = original_count - len(self._image_queues[queue_key])
-        if removed_count > 0:
-            self._cleanup_image_cache_files(removed_items)
-            self._mark_queue_dirty(queue_key)
-            logger.debug(f"已清理被总结消息的 {removed_count} 张图片")
-
-        return removed_count
-
-    @staticmethod
-    def _cleanup_image_cache_files(items: list[Any]) -> None:
-        """删除图片队列项对应的本地缓存文件
-
-        仅删除位于插件 image_cache 目录下的文件，避免误删平台原始文件。
-
-        Args:
-            items: 被移除的 ImageQueueItem 列表
-        """
-        try:
-            cache_root = (get_config().data_dir / "image_cache").resolve(strict=True)
-        except (FileNotFoundError, OSError, RuntimeError):
-            return
-
-        for item in items:
-            try:
-                info = getattr(item, "image_info", None)
-                if not info:
-                    continue
-                fp = getattr(info, "file_path", None)
-                if not fp:
-                    continue
-                path = Path(fp)
-                if not path.is_absolute():
-                    continue
-                try:
-                    resolved = path.resolve(strict=True)
-                    resolved.relative_to(cache_root)
-                except (FileNotFoundError, OSError, ValueError):
-                    continue
-                if resolved.is_file():
-                    resolved.unlink()
-                    logger.debug(f"已删除图片缓存：{resolved.name}")
-            except Exception as e:
-                logger.debug(f"删除图片缓存文件失败：{e}")

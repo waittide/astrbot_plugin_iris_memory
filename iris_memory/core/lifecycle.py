@@ -111,31 +111,12 @@ def create_components(context: "Context", star: "Star") -> Tuple[Component, ...]
         components.append(L3KGAdapter())
         logger.debug("已添加 L3KGAdapter 组件")
 
-    # 阶段6: 定时任务调度器
-    from ..tasks import TaskScheduler
-
-    components.append(TaskScheduler())
-    logger.debug("已添加 TaskScheduler 组件")
-
     # 阶段9: 画像存储
     if config.get("profile.enable"):
         from ..profile import ProfileStorage
 
         components.append(ProfileStorage(star))
         logger.debug("已添加 ProfileStorage 组件")
-
-    # 阶段10: 图片限额管理器
-    if config.get("l1_buffer.image_parsing.enable"):
-        from ..image import (
-            ImageCacheManager,
-            ImageParseCoordinator,
-            ImageQuotaManager,
-        )
-
-        components.append(ImageQuotaManager(star))
-        components.append(ImageCacheManager(star))
-        components.append(ImageParseCoordinator())
-        logger.debug("已添加图片配额、缓存和统一协调器组件")
 
     return tuple(components)
 
@@ -164,82 +145,28 @@ async def initialize_components(component_manager: Optional[ComponentManager]) -
 
     try:
         await component_manager.initialize_all()
-
         _inject_component_manager(component_manager)
-
-        _start_scheduled_tasks_immediate(component_manager)
-
         return True
 
     except Exception as e:
         logger.error(f"组件初始化失败：{e}", exc_info=True)
-        # 即使初始化抛异常，仍尝试注入引用与启动不依赖后台组件的定时任务，
-        # 避免异常路径下调度任务完全不注册的静默降级；
-        # 任务内部会检查所需组件可用性，不可用则自动跳过。
         try:
             _inject_component_manager(component_manager)
-            _start_scheduled_tasks_immediate(component_manager)
         except Exception as task_err:
-            logger.warning(f"异常路径下启动定时任务失败：{task_err}")
+            logger.warning(f"异常路径下注入组件引用失败：{task_err}")
         return True
 
 
 def _inject_component_manager(component_manager: ComponentManager) -> None:
-    """注入 ComponentManager 引用到需要的组件
-
-    某些组件需要延迟获取其他组件的引用（如 L1Buffer 需要 LLMManager），
-    在组件初始化完成后注入 ComponentManager 引用。
-
-    Args:
-        component_manager: 组件管理器实例
-    """
-    # 注入到 L1Buffer
+    """注入 ComponentManager 引用到需要的组件"""
     l1_buffer = component_manager.get_component("l1_buffer")
     if l1_buffer and hasattr(l1_buffer, "set_component_manager"):
         l1_buffer.set_component_manager(component_manager)
         logger.debug("已注入 ComponentManager 到 L1Buffer")
 
-    # 注入到 TaskScheduler
-    scheduler = component_manager.get_component("scheduler")
-    if scheduler and hasattr(scheduler, "set_component_manager"):
-        scheduler.set_component_manager(component_manager)
-        logger.debug("已注入 ComponentManager 到 TaskScheduler")
-
-
-def _start_scheduled_tasks_immediate(component_manager: ComponentManager) -> None:
-    """启动不依赖后台组件的定时任务
-
-    在同步初始化完成后立即注册。
-
-    Args:
-        component_manager: 组件管理器实例
-    """
-    from ..config import get_config
-    from ..tasks import ImageCacheCleanupTask
-
-    scheduler = component_manager.get_component("scheduler")
-    if not scheduler or not scheduler.is_available:
-        logger.warning("TaskScheduler 不可用，跳过启动定时任务")
-        return
-
-    config = get_config()
-
-    if config.get("l1_buffer.image_parsing.enable"):
-        cache_cleanup_task = ImageCacheCleanupTask(component_manager)
-        interval_hours = config.get("image_cache_cleanup_interval_hours", 24)
-        scheduler.register_periodic_task(
-            task_name="cache_cleanup",
-            coro_func=cache_cleanup_task.execute,
-            interval_hours=interval_hours,
-        )
-
 
 async def shutdown_components(component_manager: Optional[ComponentManager]) -> None:
-    """关闭所有组件
-
-    Args:
-        component_manager: 组件管理器实例
-    """
+    """关闭所有组件"""
     global _background_init_task
 
     if _background_init_task and not _background_init_task.done():
@@ -249,17 +176,6 @@ async def shutdown_components(component_manager: Optional[ComponentManager]) -> 
         except asyncio.CancelledError:
             pass
         _background_init_task = None
-
-    # 先取消图片解析兜底任务，避免它们在组件关闭后继续操作
-    # 已 shutdown 的 L1/outbox/LLM 适配器
-    from .llm_request_hook import cancel_image_background_tasks as _cancel_related
-    from .message_hook import cancel_image_background_tasks as _cancel_pipeline
-
-    for cancel in (_cancel_pipeline, _cancel_related):
-        try:
-            await cancel()
-        except Exception as e:
-            logger.debug(f"取消图片后台任务异常（忽略）：{e}")
 
     if not component_manager:
         return

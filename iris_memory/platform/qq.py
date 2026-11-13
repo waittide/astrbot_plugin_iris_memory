@@ -31,7 +31,6 @@ from ..platform.base import (
 
 if TYPE_CHECKING:
     from astrbot.api.event import AstrMessageEvent
-    from ..image.models import ImageInfo
 
 logger = get_logger("platform.qq")
 
@@ -291,40 +290,6 @@ class OneBot11Adapter(PlatformAdapter):
         except Exception:
             return False
 
-    def get_images(self, event: Any) -> List["ImageInfo"]:
-        """获取消息中的图片列表
-
-        从 OneBot11 消息段中提取图片信息。
-        支持提取：
-        - 当前消息中的图片
-        - 引用/回复消息中的图片
-
-        Args:
-            event: AstrBot 消息事件对象
-
-        Returns:
-            图片信息列表
-        """
-        from ..image.models import ImageInfo
-
-        images: List[ImageInfo] = []
-
-        try:
-            raw_msg = self.get_raw_message(event)
-            if not raw_msg:
-                return images
-
-            images.extend(self._extract_images_from_message(raw_msg, "user"))
-
-            images.extend(self._extract_reply_images(raw_msg))
-
-            logger.debug(f"从消息中提取到 {len(images)} 张图片")
-            return images
-
-        except Exception as e:
-            logger.error(f"提取图片信息失败: {e}")
-            return images
-
     def get_reply_info(self, event: Any) -> ReplyInfo:
         """获取回复/引用消息的关联信息
 
@@ -485,113 +450,6 @@ class OneBot11Adapter(PlatformAdapter):
             if isinstance(seg, dict) and seg.get("type") == "text":
                 text_parts.append(seg.get("data", {}).get("text", ""))
         return "".join(text_parts)
-
-    def _extract_images_from_message(
-        self, raw_msg: dict[str, Any], source: str = "user"
-    ) -> List["ImageInfo"]:
-        """从消息段中提取图片
-
-        Args:
-            raw_msg: 原始消息字典
-            source: 图片来源（user/forward）
-
-        Returns:
-            图片信息列表
-        """
-        from ..image.models import ImageInfo
-
-        images: List[ImageInfo] = []
-
-        message_segments = raw_msg.get("message", [])
-
-        # AstrBot 上游仅放行 array 格式消息段
-        if not isinstance(message_segments, list):
-            return images
-
-        for segment in message_segments:
-            if not isinstance(segment, dict):
-                continue
-
-            if segment.get("type") == "image":
-                data = segment.get("data", {})
-
-                image_info = ImageInfo(
-                    url=data.get("url"),
-                    file_path=data.get("file"),
-                    format=self._detect_image_format(data.get("url", "")),
-                    size_kb=0,
-                    source=source,
-                    message_id=str(raw_msg.get("message_id", "") or ""),
-                )
-
-                images.append(image_info)
-
-        return images
-
-    def _extract_reply_images(self, raw_msg: dict[str, Any]) -> List["ImageInfo"]:
-        """提取引用/回复消息中的图片
-
-        Args:
-            raw_msg: 原始消息字典
-
-        Returns:
-            图片信息列表
-        """
-        from ..image.models import ImageInfo
-
-        images: List[ImageInfo] = []
-
-        message_segments = raw_msg.get("message", [])
-
-        if not isinstance(message_segments, list):
-            return images
-
-        for segment in message_segments:
-            if not isinstance(segment, dict):
-                continue
-
-            if segment.get("type") == "reply":
-                data = segment.get("data", {})
-
-                if "content" in data:
-                    content = data["content"]
-                    if isinstance(content, list):
-                        images.extend(
-                            self._extract_images_from_message(
-                                {"message": content}, "forward"
-                            )
-                        )
-
-                break
-
-        return images
-
-    def _detect_image_format(self, url: str) -> str:
-        """检测图片格式
-
-        从 URL 或文件名推断图片格式。
-
-        Args:
-            url: 图片 URL 或文件路径
-
-        Returns:
-            图片格式（jpg/jpeg/png/gif/webp）
-        """
-        if not url:
-            return ""
-
-        url_lower = url.lower()
-
-        if ".jpg" in url_lower or ".jpeg" in url_lower:
-            return "jpg"
-        elif ".png" in url_lower:
-            return "png"
-        elif ".gif" in url_lower:
-            return "gif"
-        elif ".webp" in url_lower:
-            return "webp"
-
-        return ""
 
     async def get_msg_by_id(self, event: Any, message_id: str) -> ReplyInfo:
         """通过消息ID获取消息内容（OneBot11 get_msg API）

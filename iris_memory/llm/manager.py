@@ -902,7 +902,6 @@ class LLMManager(Component):
             "l1_summarizer": "l1_buffer.summary_provider",
             "l3_kg_extraction": "l3_kg.extraction_provider",
             "scheduled_tasks": "scheduled_tasks.provider",
-            "image_parsing": "l1_buffer.image_parsing.provider",
             "profile_analysis": "profile.analysis_provider",
             "l2_query_rewrite": "l2_query_rewrite_provider",
         }
@@ -1046,44 +1045,6 @@ class LLMManager(Component):
         """
         return await self.generate(
             prompt=prompt, module="default", provider_id=provider if provider else None
-        )
-
-    async def generate_with_images(
-        self,
-        prompt: str,
-        image_urls: List[str],
-        module: str = "default",
-        provider_id: Optional[str] = None,
-        **kwargs,
-    ) -> str:
-        """生成文本响应（支持图片输入）
-
-        通过 provider.text_chat 的 image_urls 参数传递图片，
-        由 AstrBot Provider 负责构建正确的多模态消息格式。
-
-        Args:
-            prompt: 输入提示词
-            image_urls: 图片 URL 列表（支持 HTTP URL 或 base64 data URL）
-            module: 调用模块标识（用于统计），如 "image_parsing"
-            provider_id: Provider ID（留空使用模块配置或默认）
-            **kwargs: 其他参数
-
-        Returns:
-            生成的文本响应
-
-        Raises:
-            RuntimeError: LLMManager 未初始化
-            Exception: LLM 调用失败
-        """
-        if not self._is_available:
-            raise RuntimeError("LLMManager 未初始化")
-
-        return await self.generate_direct(
-            prompt=prompt,
-            module=module,
-            provider_id=provider_id,
-            image_urls=image_urls,
-            **kwargs,
         )
 
     async def acquire_framework_lease(
