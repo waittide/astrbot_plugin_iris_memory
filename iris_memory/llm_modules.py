@@ -14,12 +14,6 @@ PROACTIVE_REPLY_FOLLOW_UP = "proactive_reply_follow_up"
 PROACTIVE_REPLY_INITIATE = "proactive_reply_initiate"
 PROACTIVE_REPLY_PASSIVE = "proactive_reply_passive"
 FRAMEWORK_REPLY = "framework_reply"
-DREAM_CONSOLIDATION = "dream_consolidation"
-DREAM_TEMPORAL_ANCHOR = "dream_temporal_anchor"
-DREAM_CONTRADICTION = "dream_contradiction"
-DREAM_PATTERN_DISCOVERY = "dream_pattern_discovery"
-DREAM_KNOWLEDGE_INDUCTION = "dream_knowledge_induction"
-DREAM_PRUNING_CONFIRM = "dream_pruning_confirm"
 
 LEGACY_MODULES = frozenset({"default", "scheduled_tasks"})
 ALL_LLM_MODULES = frozenset(

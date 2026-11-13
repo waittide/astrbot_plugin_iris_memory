@@ -169,14 +169,6 @@ async def initialize_components(component_manager: Optional[ComponentManager]) -
 
         _start_scheduled_tasks_immediate(component_manager)
 
-        if not component_manager.all_background_init_done:
-            _background_init_task = asyncio.create_task(
-                _wait_and_start_deferred_tasks(component_manager),
-                name="iris_background_init_wait",
-            )
-        else:
-            await _start_scheduled_tasks_deferred(component_manager)
-
         return True
 
     except Exception as e:
@@ -190,21 +182,6 @@ async def initialize_components(component_manager: Optional[ComponentManager]) -
         except Exception as task_err:
             logger.warning(f"异常路径下启动定时任务失败：{task_err}")
         return True
-
-
-async def _wait_and_start_deferred_tasks(
-    component_manager: ComponentManager,
-) -> None:
-    """等待后台组件初始化完成后启动延迟任务
-
-    Args:
-        component_manager: 组件管理器实例
-    """
-    try:
-        await component_manager.wait_for_background_init(timeout=120)
-        await _start_scheduled_tasks_deferred(component_manager)
-    except Exception as e:
-        logger.error(f"等待后台组件初始化失败：{e}", exc_info=True)
 
 
 def _inject_component_manager(component_manager: ComponentManager) -> None:
@@ -256,38 +233,6 @@ def _start_scheduled_tasks_immediate(component_manager: ComponentManager) -> Non
             interval_hours=interval_hours,
         )
 
-
-async def _start_scheduled_tasks_deferred(component_manager: ComponentManager) -> None:
-    """启动依赖后台组件的定时任务
-
-    在后台组件（L2/L3）初始化完成后注册。
-    如果依赖的组件不可用，则跳过对应任务。
-
-    Args:
-        component_manager: 组件管理器实例
-    """
-    from ..config import get_config
-    from ..dream import DreamTask
-
-    scheduler = component_manager.get_component("scheduler")
-    if not scheduler or not scheduler.is_available:
-        logger.warning("TaskScheduler 不可用，跳过启动延迟定时任务")
-        return
-
-    config = get_config()
-
-    l2_available = component_manager.check_component("l2_memory") == "available"
-
-    if l2_available and config.get("scheduled_tasks.enable_dream"):
-        dream_task = DreamTask(component_manager)
-        interval_hours = config.get("dream_task_interval_hours")
-        scheduler.register_periodic_task(
-            task_name="dream",
-            coro_func=dream_task.execute,
-            interval_hours=interval_hours,
-        )
-    elif config.get("scheduled_tasks.enable_dream") and not l2_available:
-        logger.warning("L2 记忆库不可用，跳过梦境任务注册")
 
 async def shutdown_components(component_manager: Optional[ComponentManager]) -> None:
     """关闭所有组件

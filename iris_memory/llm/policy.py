@@ -9,12 +9,6 @@ from __future__ import annotations
 from enum import IntEnum
 
 from ..llm_modules import (
-    DREAM_CONSOLIDATION,
-    DREAM_CONTRADICTION,
-    DREAM_KNOWLEDGE_INDUCTION,
-    DREAM_PATTERN_DISCOVERY,
-    DREAM_PRUNING_CONFIRM,
-    DREAM_TEMPORAL_ANCHOR,
     IMAGE_PARSING,
     L1_SUMMARIZER,
     L2_QUERY_REWRITE,
@@ -64,12 +58,6 @@ _BACKGROUND_MODULES = frozenset(
 
 _MAINTENANCE_MODULES = frozenset(
     {
-        DREAM_CONSOLIDATION,
-        DREAM_TEMPORAL_ANCHOR,
-        DREAM_CONTRADICTION,
-        DREAM_PATTERN_DISCOVERY,
-        DREAM_KNOWLEDGE_INDUCTION,
-        DREAM_PRUNING_CONFIRM,
         "scheduled_tasks",
     }
 )
