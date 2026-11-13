@@ -14,6 +14,21 @@
               <span>会话列表</span>
               <v-spacer />
               <v-btn
+                icon="mdi-upload"
+                variant="text"
+                size="small"
+                title="导入 L1 缓冲"
+                :loading="importingL1"
+                @click="l1FileInput?.click()"
+              />
+              <input
+                ref="l1FileInput"
+                type="file"
+                accept=".json"
+                style="display: none"
+                @change="handleImportL1File"
+              />
+              <v-btn
                 icon="mdi-download"
                 variant="text"
                 size="small"
@@ -201,7 +216,7 @@ import { useMemoryStore } from '@/stores'
 import { useComponentState } from '@/composables/useComponentState'
 import ComponentDisabled from '@/components/ComponentDisabled.vue'
 import { clearL1Buffer } from '@/api/manage'
-import { exportL1Buffer } from '@/api/data'
+import { exportL1Buffer, importL1Buffer } from '@/api/data'
 
 const memoryStore = useMemoryStore()
 const { status, error, errorType, refreshState } = useComponentState('l1_buffer')
@@ -210,6 +225,8 @@ const selectedGroupId = ref<string | null>(null)
 const clearingBuffer = ref(false)
 const exportingAllL1 = ref(false)
 const exportingGroupL1 = ref(false)
+const importingL1 = ref(false)
+const l1FileInput = ref<HTMLInputElement | null>(null)
 const showClearDialog = ref(false)
 const clearTarget = ref<'group' | 'all'>('group')
 
@@ -231,6 +248,26 @@ const selectGroup = (groupId: string) => {
 const loadL1Messages = () => {
   if (selectedGroupId.value !== null) {
     memoryStore.fetchL1Messages(selectedGroupId.value)
+  }
+}
+
+const handleImportL1File = async (event: Event) => {
+  const target = event.target as HTMLInputElement
+  const file = target.files?.[0]
+  if (!file) return
+  importingL1.value = true
+  try {
+    const data = JSON.parse(await file.text())
+    await importL1Buffer(data)
+    loadL1Queues()
+    if (selectedGroupId.value !== null) {
+      memoryStore.fetchL1Messages(selectedGroupId.value)
+    }
+  } catch (e) {
+    console.error('导入 L1 缓冲失败:', e)
+  } finally {
+    importingL1.value = false
+    target.value = ''
   }
 }
 

@@ -18,6 +18,15 @@ export async function exportL1Buffer(groupId?: string): Promise<void> {
   await apiDownload('data/l1/export', params, `iris_l1_buffer${suffix}_${timestamp}.json`)
 }
 
+export async function importL1Buffer(data: unknown, skipDuplicates: boolean = true): Promise<any> {
+  const response = await apiPost<any>('data/l1/import', {
+    data,
+    skip_duplicates: skipDuplicates
+  })
+  checkSuccess(response, '导入 L1 缓冲失败')
+  return response.stats
+}
+
 export async function exportL2Memory(groupId?: string): Promise<void> {
   const params: Record<string, string> = groupId ? { group_id: groupId } : {}
   const timestamp = new Date().toISOString().slice(0, 10)

@@ -50,6 +50,45 @@ async def export_l1_buffer():
         return jsonify({"success": False, "error": "内部错误，详见服务日志"}), 500
 
 
+async def import_l1_buffer():
+    try:
+        manager = get_component_manager()
+        l1_buffer = manager.get_component("l1_buffer", L1Buffer)
+        if not l1_buffer or not l1_buffer.is_available:
+            return jsonify({"success": False, "error": "L1 缓冲不可用"}), 503
+
+        content_type = request.content_type or ""
+        skip_duplicates = True
+
+        if "multipart/form-data" in content_type:
+            files = await request.files
+            if "file" not in files:
+                return jsonify({"success": False, "error": "未找到上传文件"}), 400
+            file_content = files["file"].read().decode("utf-8")
+            import_data = json.loads(file_content)
+        else:
+            body = await request.get_json()
+            if not body or "data" not in body:
+                return jsonify({"success": False, "error": "请求体缺少 data 字段"}), 400
+            import_data = body["data"]
+            skip_duplicates = bool(body.get("skip_duplicates", True))
+
+        try:
+            stats = l1_buffer.import_from_data(
+                import_data, skip_duplicates=skip_duplicates
+            )
+        except ValueError as ve:
+            return jsonify({"success": False, "error": str(ve)}), 400
+
+        logger.info(f"导入 L1 消息缓冲成功：{stats}")
+        return jsonify({"success": True, "stats": stats})
+    except json.JSONDecodeError as e:
+        return jsonify({"success": False, "error": f"JSON 解析失败：{e}"}), 400
+    except Exception as e:
+        logger.error(f"导入 L1 消息缓冲失败：{e}", exc_info=True)
+        return jsonify({"success": False, "error": "内部错误，详见服务日志"}), 500
+
+
 async def export_l2_memory():
     try:
         manager = get_component_manager()
@@ -359,10 +398,25 @@ async def import_all():
         skip_duplicates = body.get("skip_duplicates", True)
 
         result = {
+            "l1_buffer": None,
             "l2_memory": None,
             "l3_kg": None,
             "profiles": None,
         }
+
+        l1_data = import_data.get("l1_buffer")
+        if l1_data:
+            l1_buffer = manager.get_component("l1_buffer", L1Buffer)
+            if l1_buffer and l1_buffer.is_available:
+                try:
+                    result["l1_buffer"] = l1_buffer.import_from_data(
+                        l1_data, skip_duplicates=skip_duplicates
+                    )
+                except Exception as e:
+                    logger.warning(f"全量导入 L1 缓冲失败：{e}")
+                    result["l1_buffer"] = {"error": "内部错误，详见服务日志"}
+            else:
+                result["l1_buffer"] = {"error": "L1 缓冲不可用"}
 
         l2_data = import_data.get("l2_memory")
         if l2_data:
@@ -438,6 +492,7 @@ def register_data_routes(context) -> None:
 
     routes = [
         (f"{prefix}/l1/export", export_l1_buffer, ["GET"], "导出 L1 消息缓冲"),
+        (f"{prefix}/l1/import", import_l1_buffer, ["POST"], "导入 L1 消息缓冲"),
         (f"{prefix}/l2/export", export_l2_memory, ["GET"], "导出 L2 记忆"),
         (f"{prefix}/l2/import", import_l2_memory, ["POST"], "导入 L2 记忆"),
         (f"{prefix}/l3/export", export_l3_kg, ["GET"], "导出 L3 知识图谱"),

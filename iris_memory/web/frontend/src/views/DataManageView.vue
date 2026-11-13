@@ -11,7 +11,7 @@
           <v-card-text>
             <v-alert type="info" variant="tonal" density="compact" class="mb-4">
               <div class="text-body-2">
-                支持导出 L1 消息缓冲，导出和导入 L2 记忆、L3 知识图谱与画像数据，以及全量备份与恢复。
+                支持导出和导入 L1 消息缓冲、L2 记忆、L3 知识图谱与画像数据，以及全量备份与恢复。
                 导出数据为 JSON 格式，导入时默认跳过已存在的记录。
               </div>
             </v-alert>
@@ -40,6 +40,22 @@
               >
                 导出 L1 缓冲
               </v-btn>
+              <v-btn
+                color="secondary"
+                variant="tonal"
+                prepend-icon="mdi-upload"
+                :loading="importingL1"
+                @click="triggerImportL1"
+              >
+                导入 L1 缓冲
+              </v-btn>
+              <input
+                ref="l1FileInput"
+                type="file"
+                accept=".json"
+                style="display: none"
+                @change="handleImportL1File"
+              />
             </div>
           </v-card-text>
         </v-card>
@@ -344,10 +360,11 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
-import { exportL1Buffer, exportL2Memory, importL2Memory, exportL3KG, importL3KG, exportProfiles, importProfiles, exportAll, importAll } from '@/api/data'
+import { exportL1Buffer, importL1Buffer, exportL2Memory, importL2Memory, exportL3KG, importL3KG, exportProfiles, importProfiles, exportAll, importAll } from '@/api/data'
 import { clearL1Buffer, deleteL2Memory, deleteL3KG, mergeL3Duplicates, deleteProfile } from '@/api/manage'
 
 const exportingL1 = ref(false)
+const importingL1 = ref(false)
 const exportingL2 = ref(false)
 const importingL2 = ref(false)
 const exportingL3 = ref(false)
@@ -363,6 +380,7 @@ const deletingL3 = ref(false)
 const mergingL3 = ref(false)
 const deletingProfile = ref(false)
 
+const l1FileInput = ref<HTMLInputElement | null>(null)
 const l2FileInput = ref<HTMLInputElement | null>(null)
 const l3FileInput = ref<HTMLInputElement | null>(null)
 const profileFileInput = ref<HTMLInputElement | null>(null)
@@ -405,6 +423,29 @@ const handleExportL1 = async () => {
     notify((e as Error).message || '导出失败', 'error')
   } finally {
     exportingL1.value = false
+  }
+}
+
+const triggerImportL1 = () => {
+  l1FileInput.value?.click()
+}
+
+const handleImportL1File = async (event: Event) => {
+  const target = event.target as HTMLInputElement
+  const file = target.files?.[0]
+  if (!file) return
+
+  importingL1.value = true
+  try {
+    const text = await file.text()
+    const data = JSON.parse(text)
+    const stats = await importL1Buffer(data)
+    notify(`L1 缓冲导入成功：导入 ${stats.imported_messages} 条消息（${stats.imported_queues} 个会话），跳过 ${stats.skipped_messages} 条`)
+  } catch (e: unknown) {
+    notify((e as Error).message || '导入失败', 'error')
+  } finally {
+    importingL1.value = false
+    target.value = ''
   }
 }
 

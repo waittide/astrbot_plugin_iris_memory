@@ -1753,3 +1753,62 @@ class L1Buffer(Component):
             "total_messages": total_messages,
             "queues": queues_data,
         }
+
+    def import_from_data(
+        self, data: Dict[str, Any], skip_duplicates: bool = True
+    ) -> Dict[str, int]:
+        """从导出的字典快照导入 L1 消息缓冲。"""
+        if not isinstance(data, dict) or not isinstance(data.get("queues"), dict):
+            raise ValueError("无效的 L1 导入数据格式：缺少 queues 字段")
+
+        imported_queues = 0
+        imported_messages = 0
+        skipped_messages = 0
+
+        for raw_key, q_payload in data["queues"].items():
+            if not isinstance(q_payload, dict):
+                continue
+            q_key = self._get_queue_key(str(raw_key))
+            queue = self._get_or_create_queue(q_key)
+            existing_keys = {
+                (m.timestamp.isoformat(), m.role, m.source, m.content)
+                for m in queue.all_messages
+            }
+
+            raw_msgs = q_payload.get("messages")
+            if not isinstance(raw_msgs, list):
+                segs = q_payload.get("segments") or {}
+                raw_msgs = (
+                    list(segs.get("segment_3") or [])
+                    + list(segs.get("segment_2") or [])
+                    + list(segs.get("segment_1") or [])
+                )
+
+            queue_added = 0
+            for item in raw_msgs:
+                if not isinstance(item, dict):
+                    continue
+                msg = ContextMessage.from_dict(item)
+                dedup_key = (
+                    msg.timestamp.isoformat(),
+                    msg.role,
+                    msg.source,
+                    msg.content,
+                )
+                if skip_duplicates and dedup_key in existing_keys:
+                    skipped_messages += 1
+                    continue
+                existing_keys.add(dedup_key)
+                queue.add_message(msg)
+                imported_messages += 1
+                queue_added += 1
+
+            if queue_added > 0:
+                imported_queues += 1
+                self._mark_queue_dirty(q_key)
+
+        return {
+            "imported_queues": imported_queues,
+            "imported_messages": imported_messages,
+            "skipped_messages": skipped_messages,
+        }
