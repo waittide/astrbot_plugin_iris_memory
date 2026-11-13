@@ -17,29 +17,8 @@ from .prompts import SPEAK_HINTS
 from .runtime import GroupReplyGate
 from .signals import SignalGate
 from .state import StateManager
-from .stats import StatsCollector
 from .time_hint import resolve_datetime_reminder, wrap_system_reminder
 from ..llm_modules import PROACTIVE_REPLY_INITIATE
-
-
-def _record_initiate_send(group_id: str, text: str, success: bool, error: str = "") -> None:
-    """写入统一运行日志（proactive 类型，主动发起直发结果）。"""
-    try:
-        from ..core.run_log import get_run_log_manager
-
-        get_run_log_manager().record(
-            "proactive",
-            f"主动发起{'已发送' if success else '发送失败'}",
-            success=success,
-            group_id=group_id,
-            wake="timer",
-            motive="initiate",
-            stage="send",
-            message=text,
-            error=error,
-        )
-    except Exception:
-        pass
 
 
 class ProactiveEngine:
@@ -57,7 +36,7 @@ class ProactiveEngine:
         window: SlidingWindow,
         signals: SignalGate,
         decision_core: DecisionCore,
-        stats: StatsCollector,
+        stats: object = None,
         *,
         llm_manager,
         packager: ContextPackager,
@@ -75,7 +54,6 @@ class ProactiveEngine:
         self._signals = signals
         self._core = decision_core
         self._llm_manager = llm_manager
-        self._stats = stats
         self._packager = packager
         self._umo_get = umo_get
         self._is_busy = is_busy
@@ -270,7 +248,6 @@ class ProactiveEngine:
             outcome = await self._core.decide(req, self._llm_manager, provider_id)
 
             if outcome.error or outcome.decision is None:
-                self._stats.record_decision_error(group_id, "initiate")
                 if outcome.error_kind == "input_content_safety_1026":
                     async with self._state.get_lock(group_id):
                         cleanup = self._core.clear_rejected_dynamic_context(
@@ -292,14 +269,6 @@ class ProactiveEngine:
                 return f"决策调用失败: {outcome.error}"
 
             decision = outcome.decision
-            self._stats.record_decision(
-                group_id, "initiate",
-                system_prompt=outcome.system_prompt,
-                user_prompt=outcome.user_prompt,
-                response_text=outcome.raw_text,
-                decision=decision,
-                duration_ms=outcome.duration_ms,
-            )
             logger.info(
                 "Iris Reply: initiate decision for group %s: speak=%s, drifted=%s, "
                 "source=%s, why_now=%.100s, topic=%.100s",
@@ -351,10 +320,7 @@ class ProactiveEngine:
                 return f"已取消发起：{guard}"
             ok = await self._context.send_message(umo, chain)
             if not ok:
-                _record_initiate_send(group_id, text, False, "未找到匹配的消息平台")
                 return "发送失败：未找到匹配的消息平台"
-
-            _record_initiate_send(group_id, text, True)
 
             self._window.append(group_id, WindowMessage(
                 sender_id=self._self_id_get() or "iris",

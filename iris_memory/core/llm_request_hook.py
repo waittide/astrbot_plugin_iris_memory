@@ -167,14 +167,6 @@ async def preprocess_llm_request(
     # 图片只调度后台解析，不再占用 on_llm_request 的会话锁。
     # L1 / 画像 / L2 / learning 互不依赖，并发收集；L3 仅等待 L2
     # 的结果，以便使用关联节点做图扩展。每个任务内部故障隔离。
-    preprocess_started = time.perf_counter()
-    inject_meta: dict = {
-        "l1": {},
-        "profile": {},
-        "l2": {},
-        "l3": {},
-    }
-
     user_message = ""
     if hasattr(event, "message_str") and event.message_str:
         user_message = event.message_str
@@ -182,41 +174,21 @@ async def preprocess_llm_request(
         user_message = event.get_message_str()
 
     l1_task = asyncio.create_task(
-        _run_stage(
-            "l1",
-            inject_meta["l1"],
-            _collect_l1_context(event, req, component_manager, meta=inject_meta["l1"]),
-            "",
-        )
+        _run_stage("l1", _collect_l1_context(event, req, component_manager), "")
     )
     profile_task = asyncio.create_task(
-        _run_stage(
-            "profile",
-            inject_meta["profile"],
-            _collect_user_profile(event, component_manager, meta=inject_meta["profile"]),
-            "",
-        )
+        _run_stage("profile", _collect_user_profile(event, component_manager), "")
     )
     l2_task = asyncio.create_task(
-        _run_stage(
-            "l2",
-            inject_meta["l2"],
-            _collect_l2_memory(event, component_manager, meta=inject_meta["l2"]),
-            ("", []),
-        )
+        _run_stage("l2", _collect_l2_memory(event, component_manager), ("", []))
     )
 
     async def collect_l3_after_l2() -> str:
         _l2_text, l2_results = await l2_task
         return await _run_stage(
             "l3",
-            inject_meta["l3"],
             _collect_l3_knowledge_graph(
-                event,
-                component_manager,
-                l2_results,
-                user_message,
-                meta=inject_meta["l3"],
+                event, component_manager, l2_results, user_message
             ),
             "",
         )
@@ -226,110 +198,22 @@ async def preprocess_llm_request(
         l1_task, profile_task, l2_task, l3_task
     )
     l2_text, _l2_results = l2_pair
-    total_duration_ms = _elapsed_ms(preprocess_started)
 
-    combined = _inject_to_extra_user_content_parts(
-        req, l1_text, profile_text, l2_text, l3_text
-    )
-
-    _record_injection_log(
-        event,
-        req,
-        l1_text=l1_text,
-        profile_text=profile_text,
-        l2_text=l2_text,
-        l3_text=l3_text,
-        meta=inject_meta,
-        combined=combined,
-        user_message=user_message,
-        total_duration_ms=total_duration_ms,
-    )
-
+    _inject_to_extra_user_content_parts(req, l1_text, profile_text, l2_text, l3_text)
     _log_final_context(req)
-
-
-def _elapsed_ms(started: float) -> float:
-    return round((time.perf_counter() - started) * 1000, 2)
 
 
 async def _run_stage(
     stage: str,
-    meta: dict,
     awaitable: Awaitable[Any],
     fallback: Any,
 ) -> Any:
-    """运行单个上下文收集阶段，统一记录耗时并隔离异常。"""
-    started = time.perf_counter()
+    """运行单个上下文收集阶段并隔离异常。"""
     try:
         return await awaitable
     except Exception as exc:
-        meta["error"] = str(exc)
         logger.error(f"{stage} 上下文收集失败，已隔离：{exc}", exc_info=True)
         return fallback
-    finally:
-        meta["duration_ms"] = _elapsed_ms(started)
-
-
-def _record_injection_log(
-    event: "AstrMessageEvent",
-    req: "ProviderRequest",
-    *,
-    l1_text: str,
-    profile_text: str,
-    l2_text: str,
-    l3_text: str,
-    meta: dict,
-    combined: str,
-    user_message: str,
-    total_duration_ms: float,
-) -> None:
-    """写入统一运行日志（injection 类型），失败不影响主流程"""
-    try:
-        from ..core.run_log import get_run_log_manager
-
-        group_id = ""
-        session_id = ""
-        try:
-            from ..platform import get_adapter
-
-            adapter = get_adapter(event)
-            group_id = adapter.get_group_id(event) or ""
-            session_id = adapter.get_session_id(event) or ""
-        except Exception:
-            pass
-
-        sections = {
-            "l1_context": {"chars": len(l1_text), "injected": bool(l1_text), **meta.get("l1", {})},
-            "profile": {"chars": len(profile_text), "injected": bool(profile_text), **meta.get("profile", {})},
-            "l2_memory": {"chars": len(l2_text), "injected": bool(l2_text), **meta.get("l2", {})},
-            "l3_kg": {"chars": len(l3_text), "injected": bool(l3_text), **meta.get("l3", {})},
-        }
-        injected_count = sum(1 for s in sections.values() if s["injected"])
-
-        if injected_count:
-            title = f"注入 {injected_count} 个 section（共 {len(combined)} 字符）"
-        else:
-            title = "所有 section 均为空，未注入"
-
-        get_run_log_manager().record(
-            "injection",
-            title,
-            success=injected_count > 0,
-            group_id=group_id,
-            session_id=session_id,
-            user_message=user_message,
-            injected_sections=injected_count,
-            total_chars=len(combined),
-            sections=sections,
-            stage_timings_ms={
-                stage: round(float(meta.get(stage, {}).get("duration_ms", 0.0)), 2)
-                for stage in ("l1", "profile", "l2", "l3")
-            },
-            total_duration_ms=round(total_duration_ms, 2),
-            content=combined,
-        )
-    except Exception as e:
-        logger.debug(f"注入运行日志记录失败（已忽略）：{e}")
 
 
 def _inject_to_extra_user_content_parts(

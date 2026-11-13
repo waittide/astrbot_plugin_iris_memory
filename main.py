@@ -49,7 +49,6 @@ from .iris_memory.core import (
     handle_pre_request_cleanup,
     handle_initiate_backfill,
     set_component_manager,
-    get_run_log_manager,
 )
 from .iris_memory.tools import register_llm_tools
 from .iris_memory.utils.token_counter import warm_up_encoders_async
@@ -82,7 +81,6 @@ from .iris_memory.proactive.prompts import SPEAK_HINTS
 from .iris_memory.proactive.proactive import ProactiveEngine
 from .iris_memory.proactive.signals import SignalGate
 from .iris_memory.proactive.state import StateManager
-from .iris_memory.proactive.stats import StatsCollector
 from .iris_memory.proactive.time_hint import resolve_datetime_reminder
 from .iris_memory.proactive.tools import ToolContext
 
@@ -167,7 +165,6 @@ class IrisMemoryPlugin(Star):
                 ),
             )
             self._admin = AdminCommands(self._state)
-            self._stats = StatsCollector()
             # 每群二态运行时：等待 / 回复中，同一群同一时刻只有一轮回复
             self._gate = GroupReplyGate(_IRIS_ACTIVE_TIMEOUT)
             self._passive_watch_last: dict[str, float] = {}
@@ -184,7 +181,6 @@ class IrisMemoryPlugin(Star):
                 self._sliding_window,
                 self._signals,
                 self._decision_core,
-                self._stats,
                 llm_manager=self._llm_manager,
                 packager=self._context_packager,
                 umo_get=lambda gid: self._group_umo.get(gid),
@@ -272,7 +268,6 @@ class IrisMemoryPlugin(Star):
             await self._kv_save("iris_reply:config_overrides", {})
             logger.info(f"已将 {len(migrated)} 项旧版主动回复页面配置迁移至隐藏参数")
         self._save_task = asyncio.create_task(self._periodic_save())
-        self._stats.enabled = self._reply_config.stats_enabled
         await self._proactive.start()
 
         # 4. 功能重叠插件检测（重复注入/门控警告）
@@ -613,32 +608,8 @@ class IrisMemoryPlugin(Star):
                 module=module,
                 provider_id=provider_id,
             )
-            try:
-                # 先把 lease ID 写入事件，确保后续任一步骤抛错时都能在
-                # 当前栈内释放，而不必等待 watchdog 回收。
-                event.set_extra("iris_llm_lease_id", lease.lease_id)
-                await self._llm_manager.record_framework_attempt(module)
-                event.set_extra(
-                    "iris_llm_tracking",
-                    {
-                        "module": module,
-                        "provider_id": provider_id,
-                        "started_at": time.time(),
-                        "prompt": getattr(req, "prompt", "") or "",
-                        "priority": lease.priority.name,
-                        "queue_wait_ms": lease.queue_wait_ms,
-                        "in_flight_at_start": lease.in_flight_at_start,
-                        "queue_depth_at_start": lease.queue_depth_at_start,
-                    },
-                )
-            except Exception:
-                event.set_extra("iris_llm_lease_id", None)
-                await self._llm_manager.release_framework_lease(
-                    lease.lease_id,
-                    provider_id=provider_id,
-                    success=False,
-                )
-                raise
+            event.set_extra("iris_llm_lease_id", lease.lease_id)
+            event.set_extra("iris_llm_provider_id_for_lease", provider_id)
 
     async def _handle_reply_decision(self, event: AstrMessageEvent) -> bool:
         """主动回复统一决策执行点（每群二态：等待 / 回复中）。
@@ -721,7 +692,6 @@ class IrisMemoryPlugin(Star):
                 else:
                     logger.error(f"Iris Reply: decision LLM call failed for group {group_id}: {outcome.error}")
                     await self._state.save_dirty(self._kv_save)
-                self._stats.record_decision_error(group_id, motive)
                 release_reason = "decision error"
                 return True
 
@@ -729,14 +699,6 @@ class IrisMemoryPlugin(Star):
             logger.info(
                 f"Iris Reply: decision raw for group {group_id} (motive={motive}, "
                 f"len={len(outcome.raw_text)}): {outcome.raw_text:.500s}"
-            )
-            self._stats.record_decision(
-                group_id, motive,
-                system_prompt=outcome.system_prompt,
-                user_prompt=outcome.user_prompt,
-                response_text=outcome.raw_text,
-                decision=decision,
-                duration_ms=outcome.duration_ms,
             )
             logger.info(
                 f"Iris Reply: decision parsed for group {group_id}: speak={decision.should_speak}, "
@@ -845,38 +807,18 @@ class IrisMemoryPlugin(Star):
 
     @filter.on_llm_response()
     async def on_llm_response(self, event: AstrMessageEvent, resp: LLMResponse) -> None:
-        tracking = event.get_extra("iris_llm_tracking")
         lease_id = event.get_extra("iris_llm_lease_id")
         if lease_id and self._llm_manager:
             try:
                 await self._llm_manager.release_framework_lease(
                     lease_id,
-                    provider_id=(tracking or {}).get("provider_id", ""),
+                    provider_id=event.get_extra("iris_llm_provider_id_for_lease") or "",
                     success=True,
                 )
             except Exception as e:
-                # 响应已经产生，租约统计故障不应中断消息回填；Governor
-                # watchdog 仍会兜底回收尚未释放的 framework lease。
                 logger.warning(f"Iris Reply: 主管线 lease 释放失败：{e}")
             finally:
                 event.set_extra("iris_llm_lease_id", None)
-
-        if tracking and self._llm_manager:
-            try:
-                await self._llm_manager.record_framework_response(
-                    module=tracking["module"],
-                    provider_id=tracking.get("provider_id", ""),
-                    response=resp,
-                    started_at=tracking.get("started_at"),
-                    prompt=tracking.get("prompt", ""),
-                    priority=tracking.get("priority", "INTERACTIVE"),
-                    queue_wait_ms=tracking.get("queue_wait_ms", 0),
-                    in_flight_at_start=tracking.get("in_flight_at_start", 0),
-                    queue_depth_at_start=tracking.get("queue_depth_at_start", 0),
-                )
-                event.set_extra("iris_llm_tracking", None)
-            except Exception as e:
-                logger.warning(f"Iris Reply: 主管线 LLM 统计失败：{e}")
 
         # 1. 记忆侧：bot 回复入 L1
         if self.component_manager:
@@ -897,25 +839,10 @@ class IrisMemoryPlugin(Star):
         if mode in ("chime_in", "follow_up"):
             self._tool_ctx.clear_context()
             await self._state.save_dirty(self._kv_save)
-            try:
-                get_run_log_manager().record(
-                    "proactive",
-                    f"{'插话' if mode == 'chime_in' else '跟进'}回复已发送",
-                    success=True,
-                    group_id=group_id,
-                    wake="message",
-                    motive=mode,
-                    stage="reply",
-                    message=(response.completion_text or "").strip(),
-                )
-            except Exception:
-                pass
             logger.info(f"Iris Reply: {mode} reply sent for group {group_id}")
             if not text:
-                # 没有可发送内容，本轮立即结束，放行排队消息
                 await self._release_gate(group_id, f"{mode} empty reply")
         elif mode == "passive":
-            self._stats.record_passive_reply(group_id)
             await self._state.save_dirty(self._kv_save)
             logger.info(f"Iris Reply: passive reply boost applied for group {group_id}")
             if not text:
@@ -1063,11 +990,9 @@ class IrisMemoryPlugin(Star):
                     f"anchor_cleared={cleanup.anchor_cleared}): "
                     f"{outcome.error}"
                 )
-                self._stats.record_decision_error(group_id, "watch")
                 return
             else:
                 logger.warning(f"Iris Reply: passive watch eval failed for group {group_id}: {outcome.error}")
-            self._stats.record_decision_error(group_id, "watch")
             async with self._state.get_lock(group_id):
                 self._state.write_anchor(
                     group_id, kind="passive", bot_message=bot_text, users=[fallback_sender],
@@ -1076,14 +1001,6 @@ class IrisMemoryPlugin(Star):
             return
 
         decision = outcome.decision
-        self._stats.record_decision(
-            group_id, "watch",
-            system_prompt=outcome.system_prompt,
-            user_prompt=outcome.user_prompt,
-            response_text=outcome.raw_text,
-            decision=decision,
-            duration_ms=outcome.duration_ms,
-        )
         logger.info(
             f"Iris Reply: passive watch eval for group {group_id}: watch={decision.watch}, "
             f"keywords={decision.watch_keywords}, drifted={decision.drifted}"
