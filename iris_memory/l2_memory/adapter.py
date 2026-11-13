@@ -611,6 +611,35 @@ class L2MemoryAdapter(Component):
         demoted.sort(key=lambda r: r.score, reverse=True)
         return demoted
 
+    async def set_memory_scope(self, memory_id: str, scope: str) -> bool:
+        """设置记忆作用域：``global``（全局共享）或 ``group``。"""
+        if not self._is_available or self._db is None or not memory_id:
+            return False
+        scope = (scope or "").strip().lower()
+        if scope not in ("global", "group"):
+            return False
+        try:
+            with self._lock:
+                row = self._db.execute(
+                    "SELECT metadata FROM memories WHERE memory_id = ?", (memory_id,)
+                ).fetchone()
+                if not row:
+                    return False
+                metadata = json.loads(row[0])
+                if scope == "global":
+                    metadata["scope"] = "global"
+                else:
+                    metadata.pop("scope", None)
+                self._db.execute(
+                    "UPDATE memories SET metadata = ? WHERE memory_id = ?",
+                    (json.dumps(metadata, ensure_ascii=False), memory_id),
+                )
+                self._db.commit()
+            return True
+        except Exception as e:
+            logger.error(f"设置记忆作用域失败：{e}", exc_info=True)
+            return False
+
     # ========================================================================
     # 访问更新
     # ========================================================================

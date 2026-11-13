@@ -1,2 +1,5 @@
 # Token 计数
 tiktoken>=0.5.0
+
+# Web 框架
+quart>=0.19.0

@@ -1722,3 +1722,34 @@ class L1Buffer(Component):
         )
         self._mark_queue_dirty(queue_key)
         return True
+
+    def export_all(self, group_id: Optional[str] = None) -> Dict[str, Any]:
+        """导出 L1 消息缓冲快照（支持全部会话或单个会话）。"""
+        queues_data: Dict[str, Any] = {}
+        total_messages = 0
+        if group_id:
+            q_key = self._get_queue_key(group_id)
+            items = [(q_key, self._queues[q_key])] if q_key in self._queues else []
+        else:
+            items = list(self._queues.items())
+
+        for q_key, queue in items:
+            all_msgs = [m.to_dict() for m in queue.all_messages]
+            total_messages += len(all_msgs)
+            queues_data[q_key] = {
+                "total_messages": len(all_msgs),
+                "total_tokens": queue.total_tokens,
+                "messages": all_msgs,
+                "segments": {
+                    "segment_3": [m.to_dict() for m in queue.segment_3],
+                    "segment_2": [m.to_dict() for m in queue.segment_2],
+                    "segment_1": [m.to_dict() for m in queue.segment_1],
+                },
+            }
+        return {
+            "version": "1.0",
+            "exported_at": datetime.now().isoformat(),
+            "queue_count": len(queues_data),
+            "total_messages": total_messages,
+            "queues": queues_data,
+        }
