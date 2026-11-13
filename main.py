@@ -32,7 +32,6 @@ from .iris_memory.config import init_config, Config
 
 from astrbot.api import AstrBotConfig
 from astrbot.api.event import filter, AstrMessageEvent
-from astrbot.api.message_components import At
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.agent.message import TextPart
 from astrbot.core.provider.entities import LLMResponse, ProviderRequest
@@ -86,7 +85,6 @@ from .iris_memory.proactive.state import StateManager
 from .iris_memory.proactive.stats import StatsCollector
 from .iris_memory.proactive.time_hint import resolve_datetime_reminder
 from .iris_memory.proactive.tools import ToolContext
-from .iris_memory.extras import ErrorFriendlyProcessor, MarkdownStripper
 
 logger = get_logger("main")
 
@@ -126,19 +124,6 @@ def _detect_passive_trigger(event: AstrMessageEvent, req, context: Context) -> N
         logger.debug(f"被动触发检测异常（不影响正常流程）：{e}")
 
 
-def _is_pure_at_self(event: AstrMessageEvent) -> bool:
-    """Return whether the message consists only of an @ mention to the bot."""
-    try:
-        messages = event.get_messages()
-        return (
-            len(messages) == 1
-            and isinstance(messages[0], At)
-            and str(messages[0].qq) == str(event.get_self_id())
-        )
-    except Exception:
-        return False
-
-
 class IrisMemoryPlugin(Star):
     """AstrBot 轻量化三合一插件主类。"""
 
@@ -165,13 +150,6 @@ class IrisMemoryPlugin(Star):
             from .iris_memory.image.recorder_bridge import init_recorder_bridge
 
             init_recorder_bridge(context)
-
-            # ── extras（自 v2 保留的低成本功能） ──
-            self._error_processor = ErrorFriendlyProcessor(self.config)
-            self._markdown_stripper = MarkdownStripper(
-                context=self.context,
-                config=self.config,
-            )
 
             # ── 主动回复侧初始化 ──
             self._reply_config = ReplyConfigManager(
@@ -218,14 +196,11 @@ class IrisMemoryPlugin(Star):
                 self_id_get=lambda: self._self_id,
                 save_fn=lambda: self._state.save_dirty(self._kv_save),
                 on_initiate_sent=self._on_initiate_sent,
-                text_transform=self._strip_initiate_text,
             )
 
             # ── 外部注册动作（依赖就绪后在构造函数末尾统一执行） ──
             self._register_llm_tools()
             self._register_command_handlers()
-
-            self._warn_empty_mention_conflict()
 
             logger.info("Iris Memory 整合插件已加载（等待异步初始化）")
         except Exception:
@@ -235,82 +210,6 @@ class IrisMemoryPlugin(Star):
                 exc_info=True,
             )
             raise
-
-    def _warn_empty_mention_conflict(self) -> None:
-        """Guide users to disable AstrBot's built-in pure-mention waiter."""
-        try:
-            if not self.config.get("extras.pure_at_reply.enable", False):
-                return
-            platform_settings = self.context.get_config().get("platform_settings", {})
-            if platform_settings.get("empty_mention_waiting", True):
-                logger.warning(
-                    "检测到 AstrBot「只 @ 机器人触发等待」已开启：纯 @ 会先被 "
-                    "AstrBot 内置处理器拦截，Iris 无法接管。若要让纯 @ 直接使用 "
-                    "L1 上下文，请关闭 platform_settings.empty_mention_waiting。"
-                )
-        except Exception as exc:
-            logger.debug(f"检查 AstrBot 纯 @ 配置失败（已忽略）：{exc}")
-
-    async def _prepare_pure_at_request(self, event: AstrMessageEvent) -> bool:
-        """Route a pure @ through the standard agent pipeline using existing L1.
-
-        AstrBot rejects a truly empty ProviderRequest before on_llm_request hooks
-        run. A whitespace-only transport prompt keeps the request alive through
-        that guard; ProviderRequest.assemble_context() drops it before provider
-        dispatch, so the model receives no synthetic user content and relies on
-        the normal Iris L1 injection.
-        """
-        if not _is_pure_at_self(event) or not self.component_manager:
-            return False
-
-        try:
-            if not self.config.get("extras.pure_at_reply.enable", False):
-                return False
-            cfg = self.context.get_config(umo=event.unified_msg_origin)
-            if cfg.get("platform_settings", {}).get("empty_mention_waiting", True):
-                return False
-
-            from .iris_memory.platform import get_adapter
-
-            adapter = get_adapter(event)
-            buffer = self.component_manager.get_available_component("l1_buffer")
-            if not buffer or not buffer.get_context(adapter.get_session_id(event), 1):
-                logger.debug("纯 @ 前没有可注入的 L1 上下文，保持 AstrBot 默认空请求行为")
-                return False
-
-            conv_mgr = getattr(self.context, "conversation_manager", None)
-            if conv_mgr is None:
-                logger.warning("纯 @ 接管失败：AstrBot conversation_manager 不可用")
-                return False
-
-            umo = event.unified_msg_origin
-            conversation_id = await conv_mgr.get_curr_conversation_id(umo)
-            if not conversation_id:
-                conversation_id = await conv_mgr.new_conversation(
-                    umo, platform_id=event.get_platform_id()
-                )
-            conversation = await conv_mgr.get_conversation(umo, conversation_id)
-            if conversation is None:
-                logger.warning("纯 @ 接管失败：无法取得标准会话")
-                return False
-
-            request = event.request_llm(
-                prompt=" ",
-                session_id=conversation_id,
-                contexts=[],
-                system_prompt="",
-                conversation=conversation,
-            )
-            event.set_extra("provider_request", request)
-            event.set_extra("iris_pure_at", True)
-            # 纯 @ 回复同样占用群状态，避免与进行中的回复并发
-            event.set_extra("iris_mode", "passive")
-            event.set_extra("iris_message_at", time.time())
-            logger.info("已接管纯 @ 消息，将通过标准管道使用现有 L1 上下文")
-            return True
-        except Exception as exc:
-            logger.error(f"纯 @ 消息接管失败，已回退 AstrBot 默认流程：{exc}", exc_info=True)
-            return False
 
     # ========================================================================
     # 记忆侧注册
@@ -477,24 +376,6 @@ class IrisMemoryPlugin(Star):
             logger.error("Iris Reply: failed to get provider ID")
             return None
 
-    def _strip_initiate_text(self, text: str) -> str:
-        """initiate 直发消息的 Markdown 去除
-
-        直发通路（context.send_message）不触发 on_decorating_result 钩子，
-        消息始终以纯文本发送到平台，此处补齐与管线消息一致的 Markdown 去除，
-        避免同群内跟话消息与主动发起消息格式处理不一致。
-        """
-        stripper = self._markdown_stripper
-        if not stripper or not text:
-            return text
-        try:
-            if not stripper.should_strip(text, use_t2i=False):
-                return text
-            return stripper.strip(text)
-        except Exception as e:
-            logger.warning(f"initiate 消息 Markdown 去除失败：{e}")
-            return text
-
     async def _on_initiate_sent(self, group_id: str, text: str) -> None:
         """initiate 直发成功后，把 bot 发言回填进 L1 缓冲
 
@@ -589,9 +470,6 @@ class IrisMemoryPlugin(Star):
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def on_message(self, event) -> None:
         """主动回复消息唤醒：门控 → 标记 → 交由 on_llm_request 决策"""
-        if await self._prepare_pure_at_request(event):
-            return
-
         if not self._reply_config.enabled:
             return
 
@@ -1248,16 +1126,3 @@ class IrisMemoryPlugin(Star):
         async def on_agent_done(self, event: AstrMessageEvent, run_context, resp) -> None:
             if self.component_manager:
                 await handle_agent_done(event, resp, self.context, self.component_manager)
-
-    @filter.on_decorating_result()
-    async def on_decorating_result(self, event: AstrMessageEvent) -> None:
-        """消息发送前处理：错误友好化 + Markdown 去除"""
-        result = event.get_result()
-        if not result:
-            return
-
-        if self._error_processor and self._error_processor.should_process(event):
-            self._error_processor.process_result(result)
-
-        if self._markdown_stripper and self._markdown_stripper.should_process(event):
-            self._markdown_stripper.process_result(result)

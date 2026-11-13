@@ -67,7 +67,6 @@ class ProactiveEngine:
         self_id_get: Callable[[], str],
         save_fn: Callable[[], Awaitable[None]],
         on_initiate_sent: Callable[[str, str], Awaitable[None]] | None = None,
-        text_transform: Callable[[str], str] | None = None,
     ) -> None:
         self._context = context
         self._config = config
@@ -84,7 +83,6 @@ class ProactiveEngine:
         self._self_id_get = self_id_get
         self._save_fn = save_fn
         self._on_initiate_sent = on_initiate_sent
-        self._text_transform = text_transform
         self._task: asyncio.Task | None = None
         self._wake_event = asyncio.Event()
         self._initiating: set[str] = set()
@@ -343,16 +341,6 @@ class ProactiveEngine:
                 return "发言文本生成失败"
 
             text = text[: self._config.proactive_max_message_len]
-            if self._text_transform is not None:
-                # 直发通路不触发 on_decorating_result，消息始终以纯文本发送，
-                # 由调用方补齐与管线一致的文本处理（如 Markdown 去除）
-                try:
-                    text = self._text_transform(text) or text
-                except Exception as e:
-                    logger.warning(
-                        "Iris Reply: text_transform error for group %s: %s",
-                        group_id, e,
-                    )
             chain = MessageChain().message(text)
             # 紧贴发送动作做最后一次 TOCTOU 校验，尽量缩小竞态窗口。
             guard = self._initiate_guard_reason(
