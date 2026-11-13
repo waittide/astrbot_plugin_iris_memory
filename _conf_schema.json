@@ -21,132 +21,13 @@
         "default": 50,
         "description": "上下文消息条数",
         "hint": "注入 LLM 上下文的最大消息条数，超量时自动总结旧消息为长期记忆。越大上下文越完整，但 Token 消耗越多，最少20条"
-      },
-      "image_parsing": {
-        "type": "object",
-        "description": "图片解析",
-        "hint": "将图片内容解析为文字描述，注入 LLM 上下文",
-        "items": {
-          "enable": {
-            "type": "bool",
-            "default": false,
-            "description": "启用图片解析",
-            "hint": "视觉解析会产生额外 LLM 调用，默认关闭；完成限流配置后再显式启用"
-          },
-          "provider": {
-            "type": "string",
-            "default": "",
-            "description": "图片解析模型 Provider",
-            "hint": "选择支持视觉能力的模型，留空则使用默认 Provider",
-            "_special": "select_provider"
-          },
-          "mode": {
-            "type": "string",
-            "default": "related",
-            "description": "解析模式",
-            "hint": "全：所有图片；相关：触发LLM/被引用/OCR命中的图片",
-            "options": [
-              "all",
-              "related"
-            ]
-          },
-          "daily_quota": {
-            "type": "int",
-            "default": 200,
-            "description": "每日解析限额",
-            "hint": "全局共享计数器，超限后静默跳过，每日00:00重置"
-          }
-        }
-      }
-    }
-  },
-  "learning": {
-    "type": "object",
-    "description": "学习模块",
-    "hint": "从群聊对话中学习表达风格、对话样例与圈内暗语，注入 LLM 上下文让回复更贴合群氛围",
-    "items": {
-      "enable": {
-        "type": "bool",
-        "default": false,
-        "description": "启用学习模块",
-        "hint": "学习群聊表达风格、对话样例与暗语，采集与审查过程会消耗少量 LLM Token"
-      },
-      "jargon_enable": {
-        "type": "bool",
-        "default": true,
-        "description": "启用暗语学习",
-        "hint": "通过多用户滚动统计和少量批量 LLM 审查自动发现群内暗语，命中时注入解释"
-      },
-      "review_provider": {
-        "type": "string",
-        "default": "",
-        "description": "审查/推断模型",
-        "hint": "用于学习模块内容审查与暗语含义推断的模型，留空则使用默认 Provider",
-        "_special": "select_provider"
-      },
-      "review_batch_size": {
-        "type": "int",
-        "default": 10,
-        "description": "攒批审查数量",
-        "hint": "待审查的对话对与表达模式累计达到此数量时触发一次 LLM 批量审查"
-      },
-      "pattern_max_count": {
-        "type": "int",
-        "default": 300,
-        "description": "表达模式上限",
-        "hint": "已学习的表达模式最大数量，超量时按命中率淘汰"
-      },
-      "pattern_decay_days": {
-        "type": "int",
-        "default": 15,
-        "description": "表达模式衰减天数",
-        "hint": "表达模式超过此天数未被命中将衰减淘汰"
-      }
-    }
-  },
-  "persona_evolution": {
-    "type": "object",
-    "description": "人格自迭代",
-    "hint": "根据群聊真人发言的表达风格迭代 AstrBot Persona，全程保留版本快照，支持逐字差异与回滚",
-    "items": {
-      "enable": {
-        "type": "bool",
-        "default": false,
-        "description": "启用人格自迭代",
-        "hint": "总开关：关闭时不采集语料、不调度迭代任务；迭代执行会消耗 LLM Token"
-      },
-      "provider": {
-        "type": "string",
-        "default": "",
-        "description": "分析与生成模型",
-        "hint": "用于风格归纳与人格候选生成的模型，留空则使用默认 Provider",
-        "_special": "select_provider"
-      },
-      "review_provider": {
-        "type": "string",
-        "default": "",
-        "description": "完整人格审查模型",
-        "hint": "完整人格模式的独立审查模型，留空则复用分析与生成模型",
-        "_special": "select_provider"
-      },
-      "sample_retention_days": {
-        "type": "int",
-        "default": 30,
-        "description": "语料保留天数",
-        "hint": "风格语料超过此天数自动删除"
-      },
-      "sample_max_count": {
-        "type": "int",
-        "default": 20000,
-        "description": "全局语料上限",
-        "hint": "风格语料最大条数，超量时按最旧优先删除"
       }
     }
   },
   "l2_memory": {
     "type": "object",
     "description": "L2 记忆库",
-    "hint": "使用 ChromaDB 存储长期记忆向量",
+    "hint": "使用 SQLite + FTS5 存储与检索长期记忆",
     "items": {
       "enable": {
         "type": "bool",
@@ -163,13 +44,7 @@
         "type": "float",
         "default": 0.3,
         "description": "相关性阈值",
-        "hint": "低于此分数的检索结果将被过滤，0 表示不过滤，推荐 0.2-0.5"
-      },
-      "enable_hybrid_retrieval": {
-        "type": "bool",
-        "default": true,
-        "description": "启用混合检索",
-        "hint": "同时使用向量语义与关键词（BM25/FTS5）双路召回并以 RRF 融合排序，提升专名、术语、数字等关键词的召回率"
+        "hint": "低于此分数的检索结果将被过滤，0 表示不过滤"
       }
     }
   },
@@ -213,7 +88,7 @@
         "type": "bool",
         "default": true,
         "description": "启用画像自动注入",
-        "hint": "在每次LLM请求前自动注入画像到system_prompt"
+        "hint": "在每次LLM请求前自动注入画像上下文"
       },
       "favorability_enable": {
         "type": "bool",
@@ -248,77 +123,6 @@
       }
     }
   },
-  "scheduled_tasks": {
-    "type": "object",
-    "description": "梦境任务",
-    "hint": "记忆的离线增量加工：时间锚定、共享扫描的记忆协调、知识归纳、persona 级 L2 清洗与每轮一次的全局 L3 维护",
-    "items": {
-      "enable_dream": {
-        "type": "bool",
-        "default": false,
-        "description": "启用梦境任务",
-        "hint": "高成本离线任务，默认关闭"
-      },
-      "provider": {
-        "type": "string",
-        "default": "",
-        "description": "梦境任务模型 Provider",
-        "hint": "选择用于执行梦境任务的模型，留空则使用默认 Provider",
-        "_special": "select_provider"
-      },
-      "dream_stage_temporal_anchor_enabled": {
-        "type": "bool",
-        "default": true,
-        "description": "时间锚定",
-        "hint": "在合并前以确定性规则将相对时间表达（昨天、上周等）转换为绝对日期，不调用 LLM"
-      },
-      "dream_stage_reconciliation_enabled": {
-        "type": "bool",
-        "default": true,
-        "description": "记忆协调",
-        "hint": "共享一次向量近邻扫描，批量完成重复合并与矛盾消解"
-      },
-      "dream_stage_knowledge_induction_enabled": {
-        "type": "bool",
-        "default": true,
-        "description": "知识归纳",
-        "hint": "增量发现行为模式，并从 L2 提取实体关系写入 persona 隔离的 L3 图谱"
-      },
-      "dream_stage_l2_pruning_enabled": {
-        "type": "bool",
-        "default": true,
-        "description": "L2 遗忘清洗",
-        "hint": "按 persona 淘汰低价值向量记忆"
-      },
-      "dream_stage_l3_maintenance_enabled": {
-        "type": "bool",
-        "default": true,
-        "description": "L3 全局维护",
-        "hint": "每轮执行一次图谱去重、无主节点清理和低价值节点淘汰"
-      },
-      "dream_max_llm_calls_per_run": {
-        "type": "int",
-        "default": 20,
-        "description": "单轮 LLM 调用硬上限",
-        "hint": "达到上限立即停止后续 persona/阶段，下一轮继续"
-      },
-      "dream_max_runtime_minutes": {
-        "type": "int",
-        "default": 20,
-        "description": "单轮最长运行分钟数"
-      },
-      "dream_max_groups_per_stage": {
-        "type": "int",
-        "default": 5,
-        "description": "单阶段最多处理的分组数"
-      },
-      "dream_min_call_interval_ms": {
-        "type": "int",
-        "default": 500,
-        "description": "Dream 两次 LLM 调用最小间隔(ms)"
-      }
-    }
-  },
   "context_control": {
     "type": "object",
     "description": "上下文接管",
@@ -328,14 +132,14 @@
         "type": "bool",
         "default": true,
         "description": "启用上下文接管",
-        "hint": "开启后，每次 LLM 请求前自动清空 AstrBot 内置对话历史(req.contexts)，上下文完全由本插件的记忆系统提供。保留对话 ID 以兼容 AstrBot 主动回复功能。关闭后 AstrBot 将保留并使用内置对话历史"
+        "hint": "开启后，每次 LLM 请求前自动清空 AstrBot 内置对话历史(req.contexts)，上下文完全由本插件的记忆系统提供"
       }
     }
   },
   "proactive": {
     "type": "object",
     "description": "主动回复",
-    "hint": "统一决策主动回复（跟话/跟进/发起）。更多高级参数在插件页面「隐藏参数」中调整",
+    "hint": "统一决策主动回复（跟话/跟进/发起）",
     "items": {
       "enabled": {
         "type": "bool",
@@ -349,62 +153,12 @@
         "description": "启用主动发起话题",
         "hint": "开启后 Iris 会在群冷场或话题结束时主动开启新话题"
       },
-      "stats_enabled": {
-        "type": "bool",
-        "default": false,
-        "description": "启用决策统计",
-        "hint": "开启后在插件页面记录每次决策的 prompt 与结果，便于调优"
-      },
       "provider_id": {
         "type": "string",
         "default": "",
         "description": "决策模型 Provider",
         "hint": "主动回复统一决策使用的模型，留空则使用默认 Provider",
         "_special": "select_provider"
-      }
-    }
-  },
-  "extras": {
-    "type": "object",
-    "description": "辅助功能",
-    "hint": "低成本的消息触发与输出优化功能",
-    "items": {
-      "pure_at_reply": {
-        "type": "object",
-        "description": "纯 @ 回复",
-        "hint": "让单独 @ 机器人的消息进入标准 LLM 管道，并仅使用已有 L1 上下文",
-        "items": {
-          "enable": {
-            "type": "bool",
-            "default": false,
-            "description": "启用纯 @ 回复接管",
-            "hint": "启用前需在 AstrBot 平台设置中关闭「只 @ 机器人是否触发等待」（platform_settings.empty_mention_waiting），否则纯 @ 会先被 AstrBot 内置处理器拦截"
-          }
-        }
-      },
-      "error_friendly": {
-        "type": "object",
-        "description": "错误消息友好化",
-        "items": {
-          "enable": {
-            "type": "bool",
-            "default": true,
-            "description": "启用错误消息友好化",
-            "hint": "将框架发送的技术性错误消息替换为友好的提示语"
-          }
-        }
-      },
-      "markdown_stripper": {
-        "type": "object",
-        "description": "Markdown 格式去除器",
-        "items": {
-          "enable": {
-            "type": "bool",
-            "default": true,
-            "description": "启用 Markdown 去除功能",
-            "hint": "当文本以纯文本形式发送时，自动去除 Markdown 格式标记（如 **粗体**、*斜体* 等），提升可读性"
-          }
-        }
       }
     }
   }

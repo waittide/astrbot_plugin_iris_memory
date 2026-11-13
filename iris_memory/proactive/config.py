@@ -8,7 +8,6 @@ from astrbot.api import AstrBotConfig
 
 _DEFAULTS = {
     "enabled": True,
-    "stats_enabled": False,
     "mute_period": {
         "start_hour": 1,
         "start_minute": 0,
@@ -33,7 +32,7 @@ _DEFAULTS = {
 
 # _conf_schema.json 中 proactive 分组内的面板键（嵌套存储，面板管理）
 _SCHEMA_GROUP = "proactive"
-_SCHEMA_KEYS = {"enabled", "proactive_enabled", "stats_enabled", "provider_id"}
+_SCHEMA_KEYS = {"enabled", "proactive_enabled", "provider_id"}
 
 # 页面管理键 → 隐藏配置键（HiddenConfig 字段名）。
 # 主动发起类键名与隐藏配置字段同名，基本参数类加 reply_ 前缀，
@@ -166,10 +165,6 @@ class ConfigManager:
     @property
     def enabled(self) -> bool:
         return bool(self._get("enabled"))
-
-    @property
-    def stats_enabled(self) -> bool:
-        return bool(self._get("stats_enabled"))
 
     @property
     def mute_period(self) -> tuple[int, int, int, int]:

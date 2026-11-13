@@ -19,7 +19,6 @@ from .models import (
 )
 from .adapter import L3KGAdapter, build_profile_alias_map
 from .retriever import GraphRetriever
-from .related_retriever import RelatedMemoryRetriever
 
 __all__ = [
     "GraphNode",
@@ -32,5 +31,4 @@ __all__ = [
     "L3KGAdapter",
     "build_profile_alias_map",
     "GraphRetriever",
-    "RelatedMemoryRetriever",
 ]
